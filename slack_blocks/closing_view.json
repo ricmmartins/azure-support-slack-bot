@@ -1,0 +1,11 @@
+{
+    "blocks": [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "*Thanks for submitting Azure support request!*\nWe'll provide more details shortly once your request has been processed."
+            }
+        }
+    ]   
+}

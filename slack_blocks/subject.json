@@ -1,0 +1,17 @@
+{
+    "blocks": [
+        {
+            "type": "input",
+            "block_id": "subject",
+            "label": {"type": "plain_text", "text": "Subject"},
+            "element": {
+                "type": "plain_text_input",
+                "action_id": "subject",
+                "placeholder": {
+                    "type": "plain_text",
+                    "text": "Azure resource issue"
+                }
+            }
+        }
+    ]
+}

@@ -1,0 +1,32 @@
+{
+    "blocks": [
+        {
+            "block_id": "select_azure_service_problem_classifications",
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "Azure Service Problem Type"
+            },
+            "accessory": {
+                "type": "external_select",
+                "placeholder": {
+                    "type": "plain_text",
+                    "text": "Azure Service Problem Type",
+                    "emoji": true
+                },
+                "action_id": "select_azure_service_problem_classifications",
+                "min_query_length": 0
+            }
+        },
+        {
+            "type": "context",
+            "block_id": "select_azure_service_problem_classifications_info",
+            "elements": [
+                {
+                    "type": "plain_text",
+                    "text": "Note: Full description will be shown after selection."
+                }
+            ]
+        }
+    ]
+}

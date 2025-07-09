@@ -1,0 +1,22 @@
+{
+    "blocks": [
+        {
+            "block_id": "select_azure_subscription",
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "Azure Subscription"
+            },
+            "accessory": {
+                "type": "external_select",
+                "placeholder": {
+                    "type": "plain_text",
+                    "text": "Azure Subscription",
+                    "emoji": true
+                },
+                "action_id": "select_azure_subscription",
+                "min_query_length": 0
+            }
+        }
+    ]
+}

@@ -1,0 +1,13 @@
+{
+	"blocks": [
+		{
+            "block_id": "select_azure_service_problem_classifications_full_text",
+			"type": "section",
+			"text": {
+				"type": "plain_text",
+				"text": " ",
+				"emoji": true
+			}
+		}
+	]
+}

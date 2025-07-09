@@ -1,0 +1,40 @@
+{
+	"blocks": [
+		{
+			"block_id": "select_preferred_contact_method",
+			"type": "section",
+			"text": {
+				"type": "mrkdwn",
+				"text": "Preferred contact method"
+			},
+			"accessory": {
+				"type": "static_select",
+				"options": [
+					{
+						"value": "email",
+						"text": {
+							"type": "plain_text",
+							"text": "Email"
+						}
+					},
+					{
+						"value": "phone",
+						"text": {
+							"type": "plain_text",
+							"text": "Phone"
+						}
+					}
+				],
+				"initial_option": {
+					"text": {
+						"type": "plain_text",
+						"text": "Email",
+						"emoji": true
+					},
+					"value": "email"
+				},
+				"action_id": "select_preferred_contact_method"
+			}
+		}
+	]
+}

@@ -1,0 +1,75 @@
+{
+	"blocks": [
+		{
+			"type": "context",
+			"block_id": "section_contact_information_full_name_context",
+			"elements": [
+				{
+					"type": "plain_text",
+					"text": " ",
+					"emoji": true
+				}
+			]
+		},
+		{
+			"block_id": "section_contact_information_full_name_divider",
+			"type": "divider"
+		},
+		{
+			"type": "header",
+			"block_id": "section_contact_information_full_name_header",
+			"text": {
+				"type": "plain_text",
+				"text": "Contact info",
+				"emoji": true
+			}
+		},
+		{
+			"type": "input",
+			"block_id": "section_contact_information_full_name",
+			"element": {
+				"type": "plain_text_input",
+				"action_id": "section_contact_information_full_name",
+				"initial_value": "",
+				"placeholder": {
+					"type": "plain_text",
+					"text": "Enter your full name"
+				}
+			},
+			"label": {
+				"type": "plain_text",
+				"text": "Full name"
+			}
+		},
+		{
+			"type": "input",
+			"block_id": "section_contact_information_email",
+			"element": {
+				"type": "email_text_input",
+				"action_id": "section_contact_information_email",
+				"initial_value": "myemail@emailserver.com"
+			},
+			"label": {
+				"type": "plain_text",
+				"text": "Email"
+			}
+		},
+		{
+			"type": "input",
+			"block_id": "section_contact_information_additional_emails",
+			"optional": true,
+			"element": {
+				"type": "email_text_input",
+				"action_id": "section_contact_information_additional_emails",
+				"placeholder": {
+					"type": "plain_text",
+					"text": "Additional email"
+				}
+			},
+			"label": {
+				"type": "plain_text",
+				"text": "Additional Email for Notification (comma separated)"
+			}
+		}
+	]
+}	

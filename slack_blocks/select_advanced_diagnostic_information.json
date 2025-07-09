@@ -1,0 +1,62 @@
+{
+	"blocks": [
+		{
+			"type": "context",
+			"elements": [
+				{
+					"type": "plain_text",
+					"text": " ",
+					"emoji": true
+				}
+			]
+		},
+		{
+			"type": "divider"
+		},
+		{
+			"type": "header",
+			"block_id": "select_advanced_diagnostic_information_header",
+			"text": {
+				"type": "plain_text",
+				"text": "Advanced diagnostic information",
+				"emoji": true
+			}
+		},
+		{
+			"block_id": "select_advanced_diagnostic_information",
+			"type": "section",
+			"text": {
+				"type": "mrkdwn",
+				"text": "Preferred contact method"
+			},
+			"accessory": {
+				"type": "static_select",
+				"options": [
+					{
+						"value": "Yes",
+						"text": {
+							"type": "plain_text",
+							"text": "Yes (Recommended)"
+						}
+					},
+					{
+						"value": "No",
+						"text": {
+							"type": "plain_text",
+							"text": "No"
+						}
+					}
+				],
+				"initial_option": {
+					"text": {
+						"type": "plain_text",
+						"text": "Yes (Recommended)",
+						"emoji": true
+					},
+					"value": "Yes"
+				},
+				"action_id": "select_advanced_diagnostic_information"
+			}
+		}
+	]
+}

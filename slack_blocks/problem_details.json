@@ -1,0 +1,18 @@
+{
+    "blocks": [
+        {
+            "type": "input",
+            "block_id": "problem_details",
+            "label": {"type": "plain_text", "text": "Problem details"},
+            "element": {
+                "multiline": true,
+                "type": "plain_text_input",
+                "action_id": "problem_details",
+                "placeholder": {
+                    "type": "plain_text",
+                    "text": "Describe your issue here..."
+                }
+            }
+        }
+    ]
+}

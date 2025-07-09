@@ -1,0 +1,17 @@
+{
+	"blocks": [
+		{
+			"type": "input",
+			"block_id": "select_preferred_contact_method_phone",
+			"element": {
+				"type": "plain_text_input",
+				"action_id": "select_preferred_contact_method_phone",
+				"initial_value": ""
+			},
+			"label": {
+				"type": "plain_text",
+				"text": "Phone Number"
+			}
+		}
+	]
+}

@@ -1,0 +1,26 @@
+{
+	"blocks": [
+		{
+			"type": "context",
+			"elements": [
+				{
+					"type": "plain_text",
+					"text": " ",
+					"emoji": true
+				}
+			]
+		},
+		{
+			"type": "divider"
+		},
+		{
+			"type": "header",
+			"block_id": "section_azure_resource_information",
+			"text": {
+				"type": "plain_text",
+				"text": "Azure resource information",
+				"emoji": true
+			}
+		}
+	]
+}

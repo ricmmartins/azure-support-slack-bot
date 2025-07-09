@@ -1,0 +1,22 @@
+{
+    "blocks": [
+        {
+            "block_id": "select_azure_resource",
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "Azure Resource"
+            },
+            "accessory": {
+                "type": "external_select",
+                "placeholder": {
+                    "type": "plain_text",
+                    "text": "Azure Resource",
+                    "emoji": true
+                },
+                "action_id": "select_azure_resource",
+                "min_query_length": 0
+            }
+        }
+    ]
+}

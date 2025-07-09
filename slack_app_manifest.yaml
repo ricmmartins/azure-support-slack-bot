@@ -1,0 +1,41 @@
+display_information:
+  name: azure-support
+  description: Bot to help with Azure Support
+  background_color: "#35373d"
+features:
+  app_home:
+    home_tab_enabled: true
+    messages_tab_enabled: false
+    messages_tab_read_only_enabled: true
+  bot_user:
+    display_name: azure-support
+    always_online: true
+  shortcuts:
+    - name: azure-support
+      type: global
+      callback_id: open_azure_support_ticket
+      description: Open an Azure Support Ticket
+oauth_config:
+  scopes:
+    bot:
+      - channels:history
+      - chat:write
+      - users:read
+      - users:read.email
+      - reactions:write
+      - commands
+      - app_mentions:read
+      - groups:read
+      - channels:read
+settings:
+  event_subscriptions:
+    request_url: https://YOUR-DOMAIN-NAME/slack/events
+    bot_events:
+      - message.channels
+  interactivity:
+    is_enabled: true
+    request_url: https://YOUR-DOMAIN-NAME/slack/events
+    message_menu_options_url: https://YOUR-DOMAIN-NAME/slack/events
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

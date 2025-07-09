@@ -1,0 +1,37 @@
+{
+	"blocks": [
+				{
+			"type": "context",
+			"elements": [
+				{
+					"type": "plain_text",
+					"text": " ",
+					"emoji": true
+				}
+			]
+		},
+		{
+			"type": "divider"
+		},
+		{
+			"type": "input",
+			"block_id": "channel_select_block",
+			"optional": true,
+			"element": {
+				"type": "conversations_select",
+				"filter": {
+					"include": ["public", "private"]
+				},
+				"action_id": "channel_select_block",
+				"placeholder": {
+					"type": "plain_text",
+					"text": "Select a channel (optional)"
+				}
+			},
+			"label": {
+				"type": "plain_text",
+				"text": "Select a Slack channel to receive the support ticket confirmation. Leave blank to get the confirmation via direct message."
+			}
+		}
+	]
+}

@@ -1,0 +1,62 @@
+{
+    "blocks": [
+        {
+            "block_id": "select_severity",
+			"type": "section",
+			"text": {
+				"type": "mrkdwn",
+				"text": "Severity"
+			},
+			"accessory": {
+				"type": "static_select",
+				"action_id": "select_severity",
+				"options": [
+					{
+						"text": {
+							"type": "plain_text",
+							"text": "A - Critical impact"
+						},
+						"value": "critical",
+						"description": {
+							"type": "plain_text",
+							"text": "Business has significant loss or degradation of services"
+						}
+					},
+					{
+						"text": {
+							"type": "plain_text",
+							"text": "B - Moderate impact"
+						},
+						"value": "moderate",
+						"description": {
+							"type": "plain_text",
+							"text": "Business can continue in an impaired manner"
+						}
+					},
+					{
+						"text": {
+							"type": "plain_text",
+							"text": "C - Minimal impact"
+						},
+						"value": "minimal",
+						"description": {
+							"type": "plain_text",
+							"text": "Business is functioning with minor impediments"
+						}
+					}
+				],
+				"initial_option": {
+					"text": {
+						"type": "plain_text",
+						"text": "C - Minimal impact"
+					},
+					"value": "minimal",
+					"description": {
+						"type": "plain_text",
+						"text": "Business is functioning with minor impediments"
+					}
+				}
+			}
+		}
+    ]
+}
