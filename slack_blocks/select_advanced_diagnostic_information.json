@@ -27,7 +27,7 @@
 			"type": "section",
 			"text": {
 				"type": "mrkdwn",
-				"text": "Preferred contact method"
+				"text": "Allow collection of advanced ​diagnostic information?​"
 			},
 			"accessory": {
 				"type": "static_select",
