@@ -15,6 +15,11 @@ features:
       type: global
       callback_id: open_azure_support_ticket
       description: Open an Azure Support Ticket
+  slash_commands:
+    - command: /azure-support
+      url: https://YOUR-DOMAIN-NAME/slack/events
+      description: Open an Azure Support Ticket
+      should_escape: false
 oauth_config:
   scopes:
     bot:
