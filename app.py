@@ -59,15 +59,13 @@ def update_private_metadata_from_action(body):
     # "clear selection"
     try:
         if 'selected_option' in action:
-            private_metadata[action['action_id']
-                             ] = action['selected_option']['value']
+            private_metadata[action['action_id']] = action['selected_option']['value']
         elif 'value' in action:
             private_metadata[action['action_id']] = action['value']
         elif 'selected_channel' in action:
             private_metadata[action['action_id']] = action['selected_channel']
     except Exception as e:
-        logger.exception(
-            f"Exception in update_private_metadata_from_action: {e}")
+        logger.exception(f"Exception in update_private_metadata_from_action: {e}")
 
     return private_metadata
 
@@ -95,8 +93,7 @@ def get_init_blocks(user_info=None):
     ))
     blocks.extend(
         handle_contact_information(
-            BlockLoader.get_block(
-                Blocks.CONTACT_INFO),
+            BlockLoader.get_block(Blocks.CONTACT_INFO),
             user_info))
     blocks.extend(BlockLoader.get_block(Blocks.CHANNEL_TICKET_CONFIRMATION))
 
@@ -153,11 +150,9 @@ def map_submitted_data_to_flat_dict(submitted_data):
     return result
 
 
-@app.shortcut(Shortcuts.OPEN_AZURE_SUPPORT_TICKET)
-def open_support_modal(ack, body, client, logger):
-    ack()
+def open_support_modal_common(trigger_id, user_id, logger_message):
+    """Common function to open support modal for both shortcut and slash command"""
     try:
-        user_id = body['user']['id']
         user_info = get_user_info(user_id)
         private_metadata = user_info
 
@@ -172,11 +167,28 @@ def open_support_modal(ack, body, client, logger):
                 "type": "plain_text",
                 "text": "Submit"},
             "blocks": get_init_blocks(user_info)}
-        client.views_open(trigger_id=body["trigger_id"], view=view)
-
-        logger.info('Opened modal for support request')
+        
+        client.views_open(trigger_id=trigger_id, view=view)
+        logger.info(logger_message)
     except SlackApiError as e:
         logger.error(f"Failed to open modal: {e.response['error']}")
+
+
+@app.shortcut(Shortcuts.OPEN_AZURE_SUPPORT_TICKET)
+def open_support_modal(ack, body, client, logger):
+    ack()
+    user_id = body['user']['id']
+    trigger_id = body["trigger_id"]
+    open_support_modal_common(trigger_id, user_id, 'Opened modal for support request via shortcut')
+
+
+# 🚨 CRITICAL FIX: Add the missing slash command handler
+@app.command("/azure-support")
+def handle_azure_support_command(ack, body, client, logger):
+    ack()
+    user_id = body['user_id']
+    trigger_id = body["trigger_id"]
+    open_support_modal_common(trigger_id, user_id, 'Opened modal for support request via slash command')
 
 
 def preload_azure_resources(private_metadata):
@@ -290,6 +302,7 @@ def handle_select_preferred_contact_method(ack, body, client, logger):
         if idx < len(blocks) and blocks[idx].get(
                 'block_id') == Blocks.PREFERRED_CONTACT_METHOD_PHONE:
             blocks.pop(idx)
+
     push_update_view(body, private_metadata)
 
 
