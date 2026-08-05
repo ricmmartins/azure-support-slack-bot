@@ -1,26 +1,37 @@
-FROM python:3.13-slim
+# syntax=docker/dockerfile:1
 
-# Set workdir
+FROM python:3.13-slim-bookworm AS builder
+
+WORKDIR /build
+
+ARG PIP_TRUSTED_HOST
+ARG PIP_INDEX_URL
+ARG PIP_FALLBACK_INDEX_URL=https://packagefeedproxy.microsoft.io/pypi/simple/
+
+COPY requirements.txt .
+RUN pip wheel --no-cache-dir --retries 1 --wheel-dir /wheels -r requirements.txt \
+    || pip wheel --no-cache-dir --index-url "${PIP_FALLBACK_INDEX_URL}" \
+        --wheel-dir /wheels -r requirements.txt
+
+FROM python:3.13-slim-bookworm
+
 WORKDIR /app
 
-# Copy requirements and install dependencies
-# COPY requirements.txt .
-# RUN pip install --upgrade pip && pip install -r requirements.txt
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PORT=5000
 
-# Copy the app
-COPY . .
+RUN addgroup --system app && adduser --system --ingroup app app
 
-# Install dependencies
-RUN pip install --upgrade pip && pip install -r requirements.txt
+COPY requirements.txt .
+COPY --from=builder /wheels /wheels
+RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt \
+    && rm -rf /wheels
 
-# NOTE: Workaround to use local credentials. NOT needed when deploying to Azure with user-assigned credentials
-RUN pip install azure-cli
+COPY --chown=app:app . .
 
-# Set environment variables (override as needed)
-ENV PYTHONUNBUFFERED=1
+USER app
 
-# Expose port (if running web server)
 EXPOSE 5000
 
-# Default command
-CMD ["python3", "app.py"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--threads", "8", "--timeout", "60", "app:web_app"]

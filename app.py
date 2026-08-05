@@ -8,28 +8,66 @@ from slack_sdk.errors import SlackApiError
 from azure_support import AzureSupportHelper
 from azure.identity import DefaultAzureCredential
 from slack_bolt import App
+from flask import Flask, request
+from slack_bolt.adapter.flask import SlackRequestHandler
 from handlers import OptionsHandler, SupportTicketSubmissionHandler
 from helpers import Blocks, BlockLoader, Shortcuts
+from service_health.routes import create_service_health_blueprint
+from service_health.runtime import create_service_health_runtime
+from service_health.telemetry import configure_telemetry
 
 # Logger setup
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(
+    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO))
 logging.getLogger('azure').setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 load_dotenv(dotenv_path=".env")
+configure_telemetry()
 
 slack_bot_token = os.environ['SLACK_BOT_TOKEN']
 client = WebClient(slack_bot_token)
 app = App(
     token=slack_bot_token,
-    signing_secret=os.environ["SLACK_SIGNING_SECRET"])
+    signing_secret=os.environ["SLACK_SIGNING_SECRET"],
+    token_verification_enabled=(
+        os.getenv("APP_ENV", "development").lower() != "test"),
+)
+web_app = Flask(__name__)
+slack_request_handler = SlackRequestHandler(app)
+_service_health_runtime = None
+
+
+@web_app.post("/slack/events")
+def slack_events():
+    return slack_request_handler.handle(request)
+
+
+def get_service_health_runtime():
+    global _service_health_runtime
+    if _service_health_runtime is None:
+        _service_health_runtime = create_service_health_runtime(client)
+    return _service_health_runtime
+
+
+web_app.register_blueprint(
+    create_service_health_blueprint(get_service_health_runtime))
 
 azure_credentials = DefaultAzureCredential()
-azure_support = AzureSupportHelper(azure_credentials)
+azure_support = AzureSupportHelper(
+    azure_credentials,
+    preload_subscriptions=os.getenv("APP_ENV", "development").lower() != "test")
 options_handler = OptionsHandler(azure_credentials, azure_support)
 
-BOT_ID = client.auth_test()['user_id']
+BOT_ID = os.getenv("SLACK_BOT_ID")
 executor = ThreadPoolExecutor()
+
+
+def get_bot_id():
+    global BOT_ID
+    if not BOT_ID:
+        BOT_ID = client.auth_test()['user_id']
+    return BOT_ID
 
 
 def handle_contact_information(blocks, private_metadata):
@@ -39,7 +77,7 @@ def handle_contact_information(blocks, private_metadata):
                 blocks[i]['element']['initial_value'] = private_metadata['real_name']
             elif b['block_id'] == Blocks.BLOCK_ID_CONTACT_INFO_EMAIL:
                 blocks[i]['element']['initial_value'] = private_metadata['email']
-        logger.debug(f'Contact info blocks after update: {blocks}')
+        logger.debug("Contact information blocks updated")
     return blocks
 
 
@@ -71,8 +109,11 @@ def update_private_metadata_from_action(body):
 
 
 def log_private_metadata(private_metadata, action):
-    for pm in private_metadata:
-        logger.info(f'{pm}: {private_metadata[pm]}')
+    logger.info(
+        "Updated private metadata for action %s with %s fields",
+        action,
+        len(private_metadata),
+    )
 
 
 def get_init_blocks(user_info=None):
@@ -102,13 +143,13 @@ def get_init_blocks(user_info=None):
 
 def get_user_info(user_id):
     user_info = client.users_info(user=user_id)
-    logger.debug(f'Fetched user_info: {user_info}')
+    logger.debug("Fetched Slack user profile")
     profile = user_info['user']['profile']
     email = profile.get('email')
     real_name = profile.get('real_name')
     phone = profile.get('phone')
 
-    if user_id is not None and user_id != BOT_ID:
+    if user_id is not None and user_id != get_bot_id():
         logger.info(f"Message from user_id: {user_id}")
 
     user_info = {
@@ -117,13 +158,13 @@ def get_user_info(user_id):
         'phone': phone,
         'email': email
     }
-    logger.info(f'Parsed user_info: {user_info}')
+    logger.info("Parsed Slack user profile")
     return user_info
 
 
 def map_submitted_data_to_flat_dict(submitted_data):
     result = {}
-    logger.info(f"Submitted data: {submitted_data}")
+    logger.info("Mapping %s submitted form fields", len(submitted_data))
 
     for sd in submitted_data:
         if sd == Blocks.BLOCK_ID_CONTACT_INFO_FULL_NAME:
@@ -167,7 +208,7 @@ def open_support_modal_common(trigger_id, user_id, logger_message):
                 "type": "plain_text",
                 "text": "Submit"},
             "blocks": get_init_blocks(user_info)}
-        
+
         client.views_open(trigger_id=trigger_id, view=view)
         logger.info(logger_message)
     except SlackApiError as e:
@@ -213,11 +254,12 @@ def handle_app_mention(event, say):
     text = event.get("text", "")
     channel_id = event.get("channel")
 
-    logger.info(f"handle_message_events.text: {text}")
+    logger.info("Received app mention")
 
     # Only react if the message is exactly a mention to the bot (no extra text)
-    bot_mention = f"<@{BOT_ID}>"
-    if user_id != BOT_ID and text.strip() == bot_mention:
+    bot_id = get_bot_id()
+    bot_mention = f"<@{bot_id}>"
+    if user_id != bot_id and text.strip() == bot_mention:
         try:
             client.reactions_add(
                 name="eyes",
@@ -228,7 +270,7 @@ def handle_app_mention(event, say):
             logger.exception(f"Exception in handle_message_events: {e}")
 
     command = text.split(' ', 1)[1].strip() if ' ' in text else ''
-    logger.info(f"handle_message_events.command: {command}")
+    logger.info("Parsed app mention command")
 
     # Placeholder, possible approach to handle for user to request status
     # update on a support ticket etc.
@@ -243,7 +285,7 @@ def handle_app_mention(event, say):
 @app.event("message")
 def handle_dm(event, say):
     # Only react to direct messages to the bot
-    if event.get("channel_type") == "im" and event.get("user") != BOT_ID:
+    if event.get("channel_type") == "im" and event.get("user") != get_bot_id():
         try:
             client.reactions_add(
                 name="eyes",
@@ -268,8 +310,10 @@ def handle_view_submission(ack, body, client, logger):
 
     submitted_data = body["view"]["state"]["values"]
     private_metadata = get_private_metadata(body)
-    logger.debug(f'Submitted data: {submitted_data}')
-    logger.debug(f'Private metadata: {private_metadata}')
+    logger.debug(
+        "Received support submission with %s form fields",
+        len(submitted_data),
+    )
 
     data = map_submitted_data_to_flat_dict(submitted_data)
     SupportTicketSubmissionHandler(
@@ -443,4 +487,4 @@ def options_azure_resource(ack, body):
 
 
 if __name__ == "__main__":
-    app.start(port=5000)
+    web_app.run(host="0.0.0.0", port=5000)

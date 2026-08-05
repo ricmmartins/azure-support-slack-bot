@@ -29,6 +29,16 @@ def test_get_private_metadata():
     assert app.get_private_metadata(body) == {"foo": "bar"}
 
 
+def test_http_routes_keep_slack_signature_verification_and_health_probe():
+    client = app.web_app.test_client()
+    assert client.get("/healthz").status_code == 200
+    unsigned_slack_request = client.post(
+        "/slack/events",
+        json={"type": "url_verification", "challenge": "test"},
+    )
+    assert unsigned_slack_request.status_code == 401
+
+
 def test_update_private_metadata_from_action_selected_option():
     body = {'actions': [{'action_id': 'aid', 'selected_option': {'value': 'val'}}], 'view': {'private_metadata': '{}'}}
     result = app.update_private_metadata_from_action(body)

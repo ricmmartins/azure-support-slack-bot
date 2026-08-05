@@ -83,7 +83,8 @@ class OptionsHandler:
             },
             "options": options
         })
-        logger.debug(f'Option groups for resources: {option_groups}')
+        logger.debug(
+            "Built %s resource option groups", len(option_groups))
         return option_groups
 
     def get_problem_classifications_options(self, subscription_id, support_service_id):
@@ -163,8 +164,8 @@ class SupportTicketSubmissionHandler:
         self.executor = executor
 
     def handle(self):
-        logger.debug(f'Flat data for support: {self.data}')
-        logger.debug(f'Private metadata: {self.private_metadata}')
+        logger.debug(
+            "Handling support submission with %s fields", len(self.data))
 
         # Prepare resource_id
         try:

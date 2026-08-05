@@ -10,6 +10,7 @@ import threading
 from cachetools import cached, TTLCache
 from collections import OrderedDict
 from azure.identity import ChainedTokenCredential
+from azure.core.exceptions import AzureError
 from azure.mgmt.support import MicrosoftSupport
 from azure.mgmt.resource import ResourceManagementClient
 from azure.mgmt.resource import SubscriptionClient
@@ -32,14 +33,15 @@ class AzureSupportHelper:
     SERVICE_ARN_TEMPLATE = '/providers/Microsoft.Support/services/{sid}'
     PROBLEM_CLASSIFICATIONS_ARN_TEMPLATE = '/providers/Microsoft.Support/services/{sid}/problemClassifications/{pcid}'
 
-    def __init__(self, credentials: ChainedTokenCredential):
+    def __init__(self, credentials: ChainedTokenCredential, preload_subscriptions=True):
         self.credentials = credentials
         self.subscription_client = SubscriptionClient(credentials)
         self.dataset = self._load_dataset_services_mapped(dataset_services_mapped_path)
         self.sub_list = []
         self.hash_cache = OrderedDict()
 
-        threading.Thread(target=self._preload_get_subscription_list, daemon=True).start()
+        if preload_subscriptions:
+            threading.Thread(target=self._preload_get_subscription_list, daemon=True).start()
 
     def _load_dataset_services_mapped(self, filepath):
         with open(filepath, "r") as f:
@@ -114,19 +116,28 @@ class AzureSupportHelper:
         return filtered
 
     def _preload_get_subscription_list(self):
+        retry_seconds = 15
         while True:
-            sub_list = self.subscription_client.subscriptions.list()
-            subs = []
-            for group in list(sub_list):
-                subs.append({
-                    'id': group.subscription_id,
-                    'display_name': group.display_name
-                })
-
-            self.sub_list = subs
-            logger.info('preloading subscriptions completed')
-
-            time.sleep(60 * 60)
+            try:
+                sub_list = self.subscription_client.subscriptions.list()
+                self.sub_list = [
+                    {
+                        'id': group.subscription_id,
+                        'display_name': group.display_name
+                    }
+                    for group in sub_list
+                ]
+                logger.info('preloading subscriptions completed')
+                retry_seconds = 15
+                time.sleep(60 * 60)
+            except AzureError:
+                logger.warning(
+                    "Subscription preload failed; retrying in %s seconds",
+                    retry_seconds,
+                    exc_info=True,
+                )
+                time.sleep(retry_seconds)
+                retry_seconds = min(retry_seconds * 2, 300)
 
     def get_subscription_list(self):
         return self.sub_list
@@ -151,7 +162,8 @@ class AzureSupportHelper:
                 rt = future_to_type[future]
                 try:
                     resources = future.result()
-                    logger.info(f'resourcesresources: {resources}')
+                    logger.info(
+                        "Loaded %s resources for type %s", len(resources), rt)
                     results.extend(resources)
                 except Exception as exc:
                     logger.info(f"Resource type {rt} generated an exception: {exc}")
@@ -169,7 +181,8 @@ class AzureSupportHelper:
                 # If resourceGroups not found or malformed id, skip
                 continue
 
-        logger.info(f'grouped: {grouped}')
+        logger.info(
+            "Grouped resources into %s resource groups", len(grouped))
         return grouped
 
     def get_resource_types_by_service_id(self, service_id):
@@ -219,8 +232,8 @@ class AzureSupportHelper:
         preferred_time_zone = data.get('preferred_time_zone', 'Eastern Standard Time')  # https://support.microsoft.com/help/973627/microsoft-time-zone-index-values
         preferred_support_language = data.get('preferred_support_language', 'en-us')
 
-        for d in data:
-            logger.info(f"{d}: {data[d]}")
+        logger.info(
+            "Preparing support ticket with %s validated fields", len(data))
 
         ticket_details = SupportTicketDetails(
             title=title,
@@ -253,9 +266,7 @@ class AzureSupportHelper:
             )
             logger.info("Support ticket created successfully!")
             result = support_ticket.result()
-            logger.info(f"Ticket ID: {result.id}")
-            logger.info(f"Ticket Title: {result.title}")
-            logger.info(f"Ticket Status: {result.status}")
+            logger.info("Support ticket creation completed")
 
             return {
                 'success': True,
@@ -266,7 +277,10 @@ class AzureSupportHelper:
                 'subscription_id': subscription_id
             }
         except Exception as e:
-            logger.info(f"Failed to create support ticket: {str(e)}")
+            logger.error(
+                "Support ticket creation failed with %s",
+                type(e).__name__,
+            )
             return {'success': False}
 
     def get_resource_id_by_resource_hash(self, subscription_id, azure_service_id, resource_hash):
@@ -280,7 +294,10 @@ class AzureSupportHelper:
         resources = self.get_sub_resources_by_resource_type_concurrent(
             self.credentials, subscription_id, tuple(resource_types))
 
-        logger.info(f'resources: {resources}')
+        logger.info(
+            "Searching %s resource groups for selected resource",
+            len(resources),
+        )
 
         for rl in resources:
             for r in resources[rl]:

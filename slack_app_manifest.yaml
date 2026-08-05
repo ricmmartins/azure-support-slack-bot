@@ -32,11 +32,14 @@ oauth_config:
       - app_mentions:read
       - groups:read
       - channels:read
+      - im:history
 settings:
   event_subscriptions:
     request_url: https://YOUR-DOMAIN-NAME/slack/events
     bot_events:
+      - app_mention
       - message.channels
+      - message.im
   interactivity:
     is_enabled: true
     request_url: https://YOUR-DOMAIN-NAME/slack/events
