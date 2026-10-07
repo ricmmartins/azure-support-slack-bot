@@ -38,8 +38,6 @@ jobs:
           docker run -d --name bot -p 5000:5000 \
             -e APP_ENV=test \
             -e SLACK_BOT_TOKEN=xoxb-ci \
-            -e SLACK_SIGNING_SECRET=ci \
-            -e SLACK_BOT_ID=BCI \
             azure-support-slack-bot:ci
           for attempt in $(seq 1 20); do
             if curl -fsS http://localhost:5000/healthz; then

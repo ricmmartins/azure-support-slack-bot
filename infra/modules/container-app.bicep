@@ -12,7 +12,6 @@ param managedIdentityId string
 param managedIdentityPrincipalId string
 param keyVaultName string
 param slackBotTokenSecretUri string
-param slackSigningSecretSecretUri string
 param tableEndpoint string
 param serviceHealthRoutesJson string
 param secureWebhookClientId string
@@ -120,11 +119,6 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
           keyVaultUrl: slackBotTokenSecretUri
           identity: managedIdentityId
         }
-        {
-          name: 'slack-signing-secret'
-          keyVaultUrl: slackSigningSecretSecretUri
-          identity: managedIdentityId
-        }
       ]
     }
     template: {
@@ -148,10 +142,6 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             {
               name: 'SLACK_BOT_TOKEN'
               secretRef: 'slack-bot-token'
-            }
-            {
-              name: 'SLACK_SIGNING_SECRET'
-              secretRef: 'slack-signing-secret'
             }
             {
               name: 'AZURE_CLIENT_ID'

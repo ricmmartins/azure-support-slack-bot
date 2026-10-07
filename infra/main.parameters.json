@@ -11,9 +11,6 @@
     "slackBotToken": {
       "value": "${SLACK_BOT_TOKEN}"
     },
-    "slackSigningSecret": {
-      "value": "${SLACK_SIGNING_SECRET}"
-    },
     "serviceHealthRoutesJson": {
       "value": "${SERVICE_HEALTH_ROUTES_JSON}"
     },

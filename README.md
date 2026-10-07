@@ -1,9 +1,10 @@
-# Azure Support Slack Bot
+# Azure Service Health for Slack
 
-A Python Slack app that opens Azure support requests and posts Azure Service
-Health incidents to Slack. Service Health alerts create one root message per
-subscription and tracking ID, then update that same message through Active,
-Updated, and Resolved states so human replies remain in its thread.
+A small Python service that posts Azure Service Health incidents to Slack.
+Each alert creates one root message per subscription and tracking ID, then
+updates that same message through Active, Updated, and Resolved states so
+human replies stay in its thread. It is notification-only: it does not open
+support requests or accept Slack commands.
 
 ## Architecture
 
@@ -15,9 +16,8 @@ Container Apps Easy Auth validates the Entra token and the application also
 requires the official AzNS caller application and
 `ActionGroupsSecureWebhook` app role.
 
-Slack continues to use `POST /slack/events` and Slack Bolt signature
-verification. The support-ticket modal, shortcut, and `/azure-support` command
-are unchanged.
+Slack is outbound only: the app calls `chat.postMessage` and `chat.update`
+with a bot token that has the `chat:write` scope.
 
 ## Prerequisites
 
@@ -26,7 +26,6 @@ are unchanged.
 - Azure CLI and Azure Developer CLI (`azd`)
 - An Azure subscription where you can create the resources in `infra/`
 - `Application Administrator` while running the Secure Webhook setup script
-- `Support Request Contributor` and `Reader` for the existing ticket workflow
 
 The bot must be invited to every configured destination channel. The manifest
 intentionally does not request `chat:write.public`.
@@ -34,7 +33,7 @@ intentionally does not request `chat:write.public`.
 ## Local development
 
 1. Copy `.env-example` to `.env`.
-2. Set the Slack credentials, a Table endpoint accessible through
+2. Set the Slack bot token, a Table endpoint accessible through
    `DefaultAzureCredential`, and a routing file or inline routing JSON.
 3. Install and run:
 
@@ -43,13 +42,13 @@ pip install -r requirements.txt
 python app.py
 ```
 
-Expose port 5000 with a trusted tunnel and replace `YOUR-DOMAIN-NAME` in the
-Slack manifest. `APP_ENV=development` bypasses Easy Auth only for local use;
-never deploy a production instance with that value. When `APP_ENV` is unset
-the app assumes `production` and requires Easy Auth plus
-`SERVICE_HEALTH_EXPECTED_AUDIENCE`.
+Send a sample Common Alert Schema payload to
+`http://localhost:5000/api/service-health`. `APP_ENV=development` bypasses
+Easy Auth only for local use; never deploy a production instance with that
+value. When `APP_ENV` is unset the app assumes `production` and requires Easy
+Auth plus `SERVICE_HEALTH_EXPECTED_AUDIENCE`.
 
-Build the production image with `docker build -t azure-support-slack-bot .`.
+Build the production image with `docker build -t azure-service-health-slack .`.
 The image installs from public PyPI by default. Pass
 `--build-arg PIP_INDEX_URL=<mirror>` when your network requires an internal
 package mirror.
@@ -58,22 +57,18 @@ package mirror.
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` | Yes | Slack credentials |
+| `SLACK_BOT_TOKEN` | Yes | Slack bot token with `chat:write` |
 | `APP_ENV` | No | `production` (default), `test`, or `development` |
-| `AZURE_TABLE_ENDPOINT` | Service Health | Table endpoint for incident state |
-| `SERVICE_HEALTH_ROUTES_JSON` / `SERVICE_HEALTH_ROUTES_FILE` | Service Health | Channel routing |
+| `AZURE_TABLE_ENDPOINT` | Yes | Table endpoint for incident state |
+| `SERVICE_HEALTH_ROUTES_JSON` / `SERVICE_HEALTH_ROUTES_FILE` | Yes | Channel routing |
 | `SERVICE_HEALTH_EXPECTED_AUDIENCE` | Production | Comma-separated accepted token audiences (`api://<client-id>,<client-id>`) |
-| `SUPPORT_TICKET_ALLOWED_SLACK_USER_IDS` | Recommended | Comma-separated Slack user IDs allowed to open tickets; empty allows every workspace member |
-| `SUPPORT_CONTACT_COUNTRY` | No | ISO country code for the ticket contact (default `USA`) |
-| `SUPPORT_PREFERRED_TIME_ZONE` | No | Windows time zone name (default `Eastern Standard Time`) |
-| `SUPPORT_PREFERRED_LANGUAGE` | No | Support language (default `en-us`) |
+| `APPLICATIONINSIGHTS_CONNECTION_STRING` | No | Enables Azure Monitor telemetry |
 | `LOG_LEVEL` | No | Python log level (default `INFO`) |
 
 Routes:
 
 | Route | Purpose |
 |---|---|
-| `POST /slack/events` | Slack events, commands, options, and interactions |
 | `POST /api/service-health` | Authenticated Common Alert Schema webhook |
 | `GET /healthz` | Process liveness |
 | `GET /readyz` | Service Health configuration readiness |
@@ -102,7 +97,6 @@ az login
 azd auth login
 azd env new
 azd env set SLACK_BOT_TOKEN "<xoxb-token>"
-azd env set SLACK_SIGNING_SECRET "<signing-secret>"
 azd env set SERVICE_HEALTH_ROUTES_JSON '{"default_channel_id":"C0123456789","rules":[]}'
 azd provision
 azd deploy
@@ -171,18 +165,15 @@ the next update posts a new root message and stores its timestamp.
 
 - Container Apps strips client-supplied `X-MS-CLIENT-PRINCIPAL*` headers, and
   the app additionally checks the AzNS caller app ID, app role, and audience.
-- Easy Auth runs in `AllowAnonymous` mode so Slack can reach `/slack/events`;
-  Slack requests are authenticated by Bolt signature verification.
-- Any workspace member can open the ticket modal unless
-  `SUPPORT_TICKET_ALLOWED_SLACK_USER_IDS` is set. Tickets are created with the
-  app's managed identity, so restrict this list in shared workspaces.
+- Easy Auth runs in `AllowAnonymous` mode so the `/healthz` and `/readyz`
+  probes stay reachable; the webhook handler rejects any request without a
+  validated AzNS principal.
+- The managed identity has no Azure Support or subscription-wide roles; it
+  only reads its Key Vault secrets and uses its own Storage account.
 - Key Vault has purge protection enabled; `azd down` leaves a soft-deleted
   vault that blocks reusing the same name for the retention period.
 - Key Vault and Storage keep public network access with RBAC-only data plane
   access. Add private endpoints if your policy requires network isolation.
-- The support-ticket RBAC assignment covers the deployment subscription only.
-  Grant `Support Request Contributor` and `Reader` on other subscriptions
-  explicitly.
 
 ## Tests
 

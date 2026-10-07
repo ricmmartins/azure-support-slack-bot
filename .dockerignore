@@ -18,6 +18,4 @@ img/
 infra/
 scripts/
 azure.yaml
-generate_dataset_service_mapping.py
-data/dataset_services.json
 slack_app_manifest.yaml

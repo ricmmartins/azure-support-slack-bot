@@ -1,4 +1,4 @@
-# Contributing to Azure Support Slack Bot
+# Contributing to Azure Service Health for Slack
 
 Thank you for your interest in contributing! Please open an issue or pull request for any improvements, bug fixes, or new features.
 

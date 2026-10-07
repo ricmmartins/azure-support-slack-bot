@@ -5,9 +5,6 @@ param resourceToken string
 @secure()
 param slackBotToken string
 
-@secure()
-param slackSigningSecret string
-
 param tags object
 
 resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
@@ -46,14 +43,6 @@ resource slackBotTokenSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   }
 }
 
-resource slackSigningSecretResource 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  parent: keyVault
-  name: 'slack-signing-secret'
-  properties: {
-    value: slackSigningSecret
-  }
-}
-
 var keyVaultSecretsUserRole = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
   '4633458b-17de-408a-b874-0445c86b69e6'
@@ -72,5 +61,4 @@ resource keyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01
 output managedIdentityId string = identity.id
 output managedIdentityPrincipalId string = identity.properties.principalId
 output keyVaultName string = keyVault.name
-output slackBotTokenSecretUri string = slackBotTokenSecret.properties.secretUriWithVersion
-output slackSigningSecretSecretUri string = slackSigningSecretResource.properties.secretUriWithVersion
+output slackBotTokenSecretUri string = slackBotTokenSecret.properties.secretUriWithVersion

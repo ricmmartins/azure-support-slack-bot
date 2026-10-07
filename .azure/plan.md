@@ -6,7 +6,7 @@ Generated: 2026-08-04
 
 ## 1. Project Overview
 
-**Goal:** Add a production-oriented Azure Service Health to Slack integration to the existing Azure Support Slack Bot without changing its support-ticket workflow.
+**Goal:** Deliver a production-oriented, notification-only Azure Service Health to Slack service. The support-ticket code inherited from Azure-Samples/azure-support-slack-bot was removed.
 
 **Path:** Modernize Existing
 
@@ -25,8 +25,7 @@ Generated: 2026-08-04
 
 | Component | Type | Technology | Path |
 |---|---|---|---|
-| Slack bot and webhook API | API | Python 3.13, Slack Bolt, Flask | repository root |
-| Azure support integration | Service | Azure management SDKs | `azure_support.py` |
+| Service Health webhook API | API | Python 3.13, Flask, Slack SDK | repository root, `service_health/` |
 
 ## 4. Recipe Selection
 
@@ -38,14 +37,14 @@ The project is Azure-only, already containerized, and has no existing IaC. AZD p
 
 | Component | Azure Service | SKU |
 |---|---|---|
-| Slack bot and Service Health webhook | Azure Container Apps | Consumption |
+| Service Health webhook | Azure Container Apps | Consumption |
 | Container images | Azure Container Registry | Basic |
 | Incident state and idempotency | Azure Table Storage | StorageV2 Standard_LRS |
 | Secrets | Azure Key Vault | Standard |
 | Telemetry | Application Insights + Log Analytics | Consumption / PerGB2018 |
 | Alert delivery | Azure Monitor Activity Log Alert + Secure Action Group | Global |
 
-The Container App uses Managed Identity for Storage, Key Vault, and ACR. Azure Monitor calls `POST /api/service-health` through a Secure Webhook using Common Alert Schema. Container Apps Easy Auth validates Microsoft Entra tokens and limits the client to the official AzNS AAD Webhook application. The existing `/slack/events` path remains protected by Slack request signing.
+The Container App uses Managed Identity for Storage, Key Vault, and ACR. Azure Monitor calls `POST /api/service-health` through a Secure Webhook using Common Alert Schema. Container Apps Easy Auth validates Microsoft Entra tokens and limits the client to the official AzNS AAD Webhook application. Slack is outbound only (`chat:write`); there is no inbound Slack endpoint.
 
 Azure Table Storage uses normalized `subscriptionId` as `PartitionKey` and a stable hash of `trackingId` as `RowKey`. ETags, a short processing lease, and payload fingerprints provide concurrency control, duplicate suppression, and stale-update protection.
 
@@ -69,7 +68,7 @@ No deployment is part of this change. Subscription usage and regional quotas mus
 
 | Check | Command | Result |
 |---|---|---|
-| Python tests | `python -m pytest -q` | Passed: 79 tests (includes production-hardening regressions) |
+| Python tests | `python -m pytest -q` | Passed: 42 tests (includes production-hardening regressions) |
 | Python lint | `python -m flake8 .` | Passed |
 | Dependency advisories | OSV.dev batch query for pinned and transitive packages | Fixed: Flask 3.1.3, python-dotenv 1.2.2, transitive security floors added |
 | Static security patterns | grep for eval/exec/pickle/shell/TLS bypass/hardcoded secrets | No findings |
@@ -106,7 +105,7 @@ changes were made during this validation.
 
 ### Preparation
 
-- Analyze the existing Slack and Azure support flows.
+- Analyze the existing Slack integration.
 - Implement Common Alert Schema parsing, routing, Table state, Slack lifecycle updates, security, retries, and observability.
 - Generate AZD/Bicep, Entra configuration script, runtime configuration, and documentation.
 - Add unit, integration, and regression tests.

@@ -7,9 +7,6 @@ param location string
 @secure()
 param slackBotToken string
 
-@secure()
-param slackSigningSecret string
-
 param serviceHealthRoutesJson string
 param secureWebhookClientId string
 param secureWebhookObjectId string
@@ -60,7 +57,6 @@ module security 'modules/security.bicep' = {
     location: location
     resourceToken: resourceToken
     slackBotToken: slackBotToken
-    slackSigningSecret: slackSigningSecret
     tags: tags
   }
 }
@@ -73,14 +69,6 @@ module storage 'modules/storage.bicep' = {
     resourceToken: resourceToken
     managedIdentityPrincipalId: security.outputs.managedIdentityPrincipalId
     tags: tags
-  }
-}
-
-module supportRbac 'modules/support-rbac.bicep' = {
-  name: 'support-rbac'
-  params: {
-    environmentName: environmentName
-    managedIdentityPrincipalId: security.outputs.managedIdentityPrincipalId
   }
 }
 
@@ -99,7 +87,6 @@ module app 'modules/container-app.bicep' = {
     managedIdentityPrincipalId: security.outputs.managedIdentityPrincipalId
     keyVaultName: security.outputs.keyVaultName
     slackBotTokenSecretUri: security.outputs.slackBotTokenSecretUri
-    slackSigningSecretSecretUri: security.outputs.slackSigningSecretSecretUri
     tableEndpoint: storage.outputs.tableEndpoint
     serviceHealthRoutesJson: serviceHealthRoutesJson
     secureWebhookClientId: secureWebhookClientId
@@ -108,9 +95,6 @@ module app 'modules/container-app.bicep' = {
     appImageName: appImageName
     tags: tags
   }
-  dependsOn: [
-    supportRbac
-  ]
 }
 
 module serviceHealthAlert 'modules/service-health-alert.bicep' = {

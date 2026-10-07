@@ -1,47 +1,16 @@
 display_information:
-  name: azure-support
-  description: Bot to help with Azure Support
-  background_color: "#35373d"
+  name: Azure Service Health
+  description: Posts Azure Service Health incidents to Slack
+  background_color: "#0078d4"
 features:
-  app_home:
-    home_tab_enabled: true
-    messages_tab_enabled: false
-    messages_tab_read_only_enabled: true
   bot_user:
-    display_name: azure-support
+    display_name: azure-service-health
     always_online: true
-  shortcuts:
-    - name: azure-support
-      type: global
-      callback_id: open_azure_support_ticket
-      description: Open an Azure Support Ticket
-  slash_commands:
-    - command: /azure-support
-      url: https://YOUR-DOMAIN-NAME/slack/events
-      description: Open an Azure Support Ticket
-      should_escape: false
 oauth_config:
   scopes:
     bot:
       - chat:write
-      - users:read
-      - users:read.email
-      - reactions:write
-      - commands
-      - app_mentions:read
-      - groups:read
-      - channels:read
-      - im:history
 settings:
-  event_subscriptions:
-    request_url: https://YOUR-DOMAIN-NAME/slack/events
-    bot_events:
-      - app_mention
-      - message.im
-  interactivity:
-    is_enabled: true
-    request_url: https://YOUR-DOMAIN-NAME/slack/events
-    message_menu_options_url: https://YOUR-DOMAIN-NAME/slack/events
   org_deploy_enabled: false
   socket_mode_enabled: false
   token_rotation_enabled: false
