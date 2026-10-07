@@ -26,7 +26,7 @@ from service_health.slack import (
     SlackIncidentNotifier,
     render_incident_message,
 )
-from test.test_service_health import StubProcessor, common_alert
+from test_service_health import StubProcessor, common_alert
 
 
 AZNS_APP_ID = "461e8683-5575-4561-ac7f-899cc907d62a"
