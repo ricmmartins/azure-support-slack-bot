@@ -45,12 +45,29 @@ python app.py
 
 Expose port 5000 with a trusted tunnel and replace `YOUR-DOMAIN-NAME` in the
 Slack manifest. `APP_ENV=development` bypasses Easy Auth only for local use;
-never deploy a production instance with that value.
+never deploy a production instance with that value. When `APP_ENV` is unset
+the app assumes `production` and requires Easy Auth plus
+`SERVICE_HEALTH_EXPECTED_AUDIENCE`.
 
 Build the production image with `docker build -t azure-support-slack-bot .`.
-The builder falls back to Microsoft's Python package proxy when direct PyPI
-downloads are blocked by a corporate network. Override `PIP_INDEX_URL` or
-`PIP_FALLBACK_INDEX_URL` with Docker build arguments when required.
+The image installs from public PyPI by default. Pass
+`--build-arg PIP_INDEX_URL=<mirror>` when your network requires an internal
+package mirror.
+
+### Configuration
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` | Yes | Slack credentials |
+| `APP_ENV` | No | `production` (default), `test`, or `development` |
+| `AZURE_TABLE_ENDPOINT` | Service Health | Table endpoint for incident state |
+| `SERVICE_HEALTH_ROUTES_JSON` / `SERVICE_HEALTH_ROUTES_FILE` | Service Health | Channel routing |
+| `SERVICE_HEALTH_EXPECTED_AUDIENCE` | Production | Comma-separated accepted token audiences (`api://<client-id>,<client-id>`) |
+| `SUPPORT_TICKET_ALLOWED_SLACK_USER_IDS` | Recommended | Comma-separated Slack user IDs allowed to open tickets; empty allows every workspace member |
+| `SUPPORT_CONTACT_COUNTRY` | No | ISO country code for the ticket contact (default `USA`) |
+| `SUPPORT_PREFERRED_TIME_ZONE` | No | Windows time zone name (default `Eastern Standard Time`) |
+| `SUPPORT_PREFERRED_LANGUAGE` | No | Support language (default `en-us`) |
+| `LOG_LEVEL` | No | Python log level (default `INFO`) |
 
 Routes:
 
@@ -89,7 +106,18 @@ azd env set SLACK_SIGNING_SECRET "<signing-secret>"
 azd env set SERVICE_HEALTH_ROUTES_JSON '{"default_channel_id":"C0123456789","rules":[]}'
 azd provision
 azd deploy
+azd provision
 ```
+
+The first `azd provision` creates the Container App with a public placeholder
+image and no health probes. `azd deploy` builds and pushes the real image and
+records `SERVICE_APP_IMAGE_NAME`; the second `azd provision` keeps that image
+and enables the `/healthz` and `/readyz` probes. Run that second provision after
+every first-time environment setup.
+
+Secure Webhook tokens are Entra v2 access tokens whose `aud` claim is the API
+client ID, so the deployment accepts both `api://<client-id>` and
+`<client-id>` as audiences.
 
 The pre-provision hook runs `scripts/configure-secure-webhook.ps1`. It creates
 or reuses the protected API app registration, app role, API service principal,
@@ -136,7 +164,25 @@ There is an unavoidable MVP crash window after a successful first
 `chat.postMessage` and before `messageTs` is persisted. Exactly-once creation
 would require a transactional queue, which is intentionally out of scope.
 Reconcile by finding the message using its tracking ID, updating the Table
-entity, and then replaying the alert.
+entity, and then replaying the alert. If a tracked Slack message is deleted,
+the next update posts a new root message and stores its timestamp.
+
+## Security notes
+
+- Container Apps strips client-supplied `X-MS-CLIENT-PRINCIPAL*` headers, and
+  the app additionally checks the AzNS caller app ID, app role, and audience.
+- Easy Auth runs in `AllowAnonymous` mode so Slack can reach `/slack/events`;
+  Slack requests are authenticated by Bolt signature verification.
+- Any workspace member can open the ticket modal unless
+  `SUPPORT_TICKET_ALLOWED_SLACK_USER_IDS` is set. Tickets are created with the
+  app's managed identity, so restrict this list in shared workspaces.
+- Key Vault has purge protection enabled; `azd down` leaves a soft-deleted
+  vault that blocks reusing the same name for the retention period.
+- Key Vault and Storage keep public network access with RBAC-only data plane
+  access. Add private endpoints if your policy requires network isolation.
+- The support-ticket RBAC assignment covers the deployment subscription only.
+  Grant `Support Request Contributor` and `Reader` on other subscriptions
+  explicitly.
 
 ## Tests
 

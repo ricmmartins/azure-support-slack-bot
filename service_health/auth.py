@@ -67,7 +67,8 @@ def authorize_easy_auth(headers, expected_client_app_id, expected_role,
         value.casefold()
         for value in claims.get("aud", [])
     }
-    if expected_audience and expected_audience.casefold() not in audiences:
+    allowed_audiences = _normalize_audiences(expected_audience)
+    if allowed_audiences and not (allowed_audiences & audiences):
         raise InvalidWebhookIdentity(
             "Webhook token audience is not authorized")
 
@@ -82,6 +83,20 @@ def authorize_easy_auth(headers, expected_client_app_id, expected_role,
     if expected_role.casefold() not in roles:
         raise InvalidWebhookIdentity(
             "Webhook caller does not have the required app role")
+
+
+def _normalize_audiences(expected_audience):
+    # v1 tokens carry the Application ID URI (api://<appId>) as aud while v2
+    # tokens carry the bare client ID, so both forms may be configured.
+    if not expected_audience:
+        return set()
+    if isinstance(expected_audience, str):
+        expected_audience = expected_audience.split(",")
+    return {
+        value.strip().casefold()
+        for value in expected_audience
+        if value and value.strip()
+    }
 
 
 def encode_test_principal(claims):

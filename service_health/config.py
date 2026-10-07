@@ -76,18 +76,26 @@ class ServiceHealthSettings:
             raise InvalidServiceHealthConfiguration(
                 "Payload and lease limits must be positive")
 
-        app_environment = environ.get(
-            "APP_ENV", "development").strip().lower()
+        app_environment = (environ.get(
+            "APP_ENV", "production").strip().lower() or "production")
         expected_audience = environ.get(
             "SERVICE_HEALTH_EXPECTED_AUDIENCE", "").strip()
         if app_environment not in {"development", "test"} and not expected_audience:
             raise InvalidServiceHealthConfiguration(
                 "SERVICE_HEALTH_EXPECTED_AUDIENCE is required outside local use")
 
+        try:
+            routing = RoutingConfig.from_dict(_read_routing_config(environ))
+        except InvalidServiceHealthConfiguration:
+            raise
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise InvalidServiceHealthConfiguration(
+                "Service Health routing configuration is invalid") from exc
+
         return cls(
             table_endpoint=endpoint,
             table_name=table_name,
-            routing=RoutingConfig.from_dict(_read_routing_config(environ)),
+            routing=routing,
             app_environment=app_environment,
             expected_client_app_id=environ.get(
                 "SERVICE_HEALTH_EXPECTED_CLIENT_APP_ID",

@@ -26,6 +26,9 @@ _TRANSIENT_SLACK_ERRORS = {
 }
 
 
+_REPOST_ON_UPDATE_ERRORS = {"message_not_found", "cant_update_message"}
+
+
 def _escape_mrkdwn(value):
     return value.replace("&", "&amp;").replace("<", "&lt;").replace(
         ">", "&gt;")
@@ -80,8 +83,16 @@ class SlackIncidentNotifier:
                 blocks=blocks,
             )
             return message_ts
-        except (SlackApiError, SlackRequestError) as exc:
+        except SlackApiError as exc:
+            if exc.response.get("error") not in _REPOST_ON_UPDATE_ERRORS:
+                self._raise_classified(exc)
+            logger.warning(
+                "Original Service Health message is gone; posting a new one",
+                extra={"tracking_id": event.tracking_id},
+            )
+        except SlackRequestError as exc:
             self._raise_classified(exc)
+        return self.create(event, channel_id, lifecycle_status)
 
     @staticmethod
     def _raise_classified(exc):
@@ -113,9 +124,9 @@ def render_incident_message(event: ServiceHealthEvent, lifecycle_status):
     impacted_text = _truncate("\n".join(services), 2800)
     communication = _truncate(_escape_mrkdwn(event.communication), 2800)
     portal_url = _service_health_url(event)
-    fallback = _truncate(
+    fallback = _truncate(_escape_mrkdwn(
         f"{icon} Azure Service Health {lifecycle_status.value}: "
-        f"{event.title} ({event.tracking_id})",
+        f"{event.title} ({event.tracking_id})"),
         4000,
     )
 

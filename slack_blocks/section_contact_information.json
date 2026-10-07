@@ -46,8 +46,7 @@
 			"block_id": "section_contact_information_email",
 			"element": {
 				"type": "email_text_input",
-				"action_id": "section_contact_information_email",
-				"initial_value": "myemail@emailserver.com"
+				"action_id": "section_contact_information_email"
 			},
 			"label": {
 				"type": "plain_text",
@@ -59,16 +58,17 @@
 			"block_id": "section_contact_information_additional_emails",
 			"optional": true,
 			"element": {
-				"type": "email_text_input",
+				"type": "plain_text_input",
 				"action_id": "section_contact_information_additional_emails",
+				"max_length": 1000,
 				"placeholder": {
 					"type": "plain_text",
-					"text": "Additional email"
+					"text": "name@example.com, other@example.com"
 				}
 			},
 			"label": {
 				"type": "plain_text",
-				"text": "Additional Email for Notification (comma separated)"
+				"text": "Additional emails (comma separated)"
 			}
 		}
 	]

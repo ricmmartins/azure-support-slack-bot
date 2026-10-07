@@ -1,3 +1,4 @@
+import json
 import logging
 import uuid
 
@@ -36,6 +37,9 @@ def create_service_health_blueprint(get_runtime):
             get_runtime()
         except InvalidServiceHealthConfiguration:
             return jsonify({"status": "not_ready"}), 503
+        except Exception:
+            logger.exception("Service Health runtime initialization failed")
+            return jsonify({"status": "not_ready"}), 503
         return jsonify({"status": "ready"}), 200
 
     @blueprint.post("/api/service-health")
@@ -65,7 +69,17 @@ def create_service_health_blueprint(get_runtime):
                     settings.expected_app_role,
                     settings.expected_audience,
                 )
-            payload = request.get_json(force=False, silent=False)
+            # Read at most limit + 1 bytes so chunked requests without a
+            # Content-Length header cannot bypass the payload limit.
+            body = request.stream.read(settings.max_payload_bytes + 1)
+            if len(body) > settings.max_payload_bytes:
+                raise RequestEntityTooLarge()
+            try:
+                payload = json.loads(body.decode(
+                    request.mimetype_params.get("charset", "utf-8")))
+            except (ValueError, LookupError) as exc:
+                raise InvalidServiceHealthPayload(
+                    "Request body is not valid JSON") from exc
             event = parse_service_health_alert(payload)
             outcome = runtime.processor.process(event)
             return (

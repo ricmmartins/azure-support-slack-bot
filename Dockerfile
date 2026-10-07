@@ -4,14 +4,10 @@ FROM python:3.13-slim-bookworm AS builder
 
 WORKDIR /build
 
-ARG PIP_TRUSTED_HOST
-ARG PIP_INDEX_URL
-ARG PIP_FALLBACK_INDEX_URL=https://packagefeedproxy.microsoft.io/pypi/simple/
+ARG PIP_INDEX_URL=https://pypi.org/simple
 
 COPY requirements.txt .
-RUN pip wheel --no-cache-dir --retries 1 --wheel-dir /wheels -r requirements.txt \
-    || pip wheel --no-cache-dir --index-url "${PIP_FALLBACK_INDEX_URL}" \
-        --wheel-dir /wheels -r requirements.txt
+RUN pip wheel --no-cache-dir --index-url "${PIP_INDEX_URL}" --wheel-dir /wheels -r requirements.txt
 
 FROM python:3.13-slim-bookworm
 
@@ -28,7 +24,7 @@ COPY --from=builder /wheels /wheels
 RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt \
     && rm -rf /wheels
 
-COPY --chown=app:app . .
+COPY . .
 
 USER app
 

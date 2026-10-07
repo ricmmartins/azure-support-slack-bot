@@ -1,6 +1,8 @@
 import os
+import re
 import json
 import logging
+import threading
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor
 from slack_sdk import WebClient
@@ -36,6 +38,7 @@ app = App(
 web_app = Flask(__name__)
 slack_request_handler = SlackRequestHandler(app)
 _service_health_runtime = None
+_service_health_runtime_lock = threading.Lock()
 
 
 @web_app.post("/slack/events")
@@ -46,7 +49,9 @@ def slack_events():
 def get_service_health_runtime():
     global _service_health_runtime
     if _service_health_runtime is None:
-        _service_health_runtime = create_service_health_runtime(client)
+        with _service_health_runtime_lock:
+            if _service_health_runtime is None:
+                _service_health_runtime = create_service_health_runtime(client)
     return _service_health_runtime
 
 
@@ -62,6 +67,28 @@ options_handler = OptionsHandler(azure_credentials, azure_support)
 BOT_ID = os.getenv("SLACK_BOT_ID")
 executor = ThreadPoolExecutor()
 
+_EMAIL_PATTERN = re.compile(r"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$")
+MAX_ADDITIONAL_EMAILS = 10
+REQUIRED_SELECTIONS = {
+    Blocks.AZURE_SUBSCRIPTION: "Azure subscription",
+    Blocks.AZURE_SERVICE: "Azure service",
+    Blocks.AZURE_SERVICE_PROBLEM_CLASSIFICATIONS: "Problem type",
+    Blocks.AZURE_RESOURCE: "Azure resource",
+    Blocks.SEVERITY: "Severity",
+    Blocks.ADVANCED_DIAGNOSTIC_INFO: "Advanced diagnostic information",
+    Blocks.PREFERRED_CONTACT_METHOD: "Preferred contact method",
+}
+
+
+def get_allowed_user_ids():
+    raw = os.getenv("SUPPORT_TICKET_ALLOWED_SLACK_USER_IDS", "")
+    return {value.strip() for value in raw.split(",") if value.strip()}
+
+
+def is_user_allowed(user_id):
+    allowed = get_allowed_user_ids()
+    return not allowed or user_id in allowed
+
 
 def get_bot_id():
     global BOT_ID
@@ -72,11 +99,19 @@ def get_bot_id():
 
 def handle_contact_information(blocks, private_metadata):
     if private_metadata:
-        for i, b in enumerate(blocks):
-            if b['block_id'] == Blocks.BLOCK_ID_CONTACT_INFO_FULL_NAME:
-                blocks[i]['element']['initial_value'] = private_metadata['real_name']
-            elif b['block_id'] == Blocks.BLOCK_ID_CONTACT_INFO_EMAIL:
-                blocks[i]['element']['initial_value'] = private_metadata['email']
+        initial_values = {
+            Blocks.BLOCK_ID_CONTACT_INFO_FULL_NAME: private_metadata.get('real_name'),
+            Blocks.BLOCK_ID_CONTACT_INFO_EMAIL: private_metadata.get('email'),
+        }
+        for b in blocks:
+            if b.get('block_id') not in initial_values:
+                continue
+            value = initial_values[b['block_id']]
+            if value:
+                b['element']['initial_value'] = value
+            else:
+                # Slack rejects empty initial values for some input types.
+                b['element'].pop('initial_value', None)
         logger.debug("Contact information blocks updated")
     return blocks
 
@@ -167,33 +202,94 @@ def map_submitted_data_to_flat_dict(submitted_data):
     logger.info("Mapping %s submitted form fields", len(submitted_data))
 
     for sd in submitted_data:
+        element = submitted_data[sd].get(sd)
+        if not isinstance(element, dict):
+            continue
         if sd == Blocks.BLOCK_ID_CONTACT_INFO_FULL_NAME:
-            value = submitted_data[sd][sd]['value'].split(' ')
-            first_name = value[0]
-            last_name = ' '.join(value[1:])
-            result['first_name'] = first_name
-            result['last_name'] = last_name
+            value = (element.get('value') or '').split()
+            result['first_name'] = value[0] if value else ''
+            result['last_name'] = ' '.join(value[1:])
         elif sd == Blocks.BLOCK_ID_CONTACT_INFO_ADDITIONAL_EMAILS:
-            if 'value' in submitted_data[sd][sd]:
-                result[Blocks.BLOCK_ID_CONTACT_INFO_ADDITIONAL_EMAILS] = [email.strip(
-                ) for email in submitted_data[sd][sd]['value'].split(',') if email.strip()]
+            raw = element.get('value') or ''
+            emails = [email.strip() for email in re.split(r"[,;\s]+", raw) if email.strip()]
+            if emails:
+                result[Blocks.BLOCK_ID_CONTACT_INFO_ADDITIONAL_EMAILS] = emails
         else:
-            if 'selected_channel' in submitted_data[sd][sd]:
-                result[sd] = submitted_data[sd][sd]['selected_channel']
-            elif 'selected_conversation' in submitted_data[sd][sd]:
-                result[sd] = submitted_data[sd][sd]['selected_conversation']
-            elif 'selected_option' in submitted_data[sd][sd]:
-                result[sd] = submitted_data[sd][sd]['selected_option']['value']
-                result[f'{sd}_text'] = submitted_data[sd][sd]['selected_option']['text']['text']
-            else:
-                result[sd] = submitted_data[sd][sd]['value']
+            if element.get('selected_channel'):
+                result[sd] = element['selected_channel']
+            elif element.get('selected_conversation'):
+                result[sd] = element['selected_conversation']
+            elif element.get('selected_option'):
+                result[sd] = element['selected_option']['value']
+                result[f'{sd}_text'] = element['selected_option']['text']['text']
+            elif element.get('value') is not None:
+                result[sd] = element['value']
 
     return result
+
+
+def validate_submission(data):
+    """Return (field_errors, missing_selections) for a mapped submission."""
+    errors = {}
+    emails = data.get(Blocks.BLOCK_ID_CONTACT_INFO_ADDITIONAL_EMAILS, [])
+    invalid = [email for email in emails if not _EMAIL_PATTERN.match(email)]
+    if invalid:
+        errors[Blocks.BLOCK_ID_CONTACT_INFO_ADDITIONAL_EMAILS] = (
+            f"Invalid email address: {invalid[0][:50]}")
+    elif len(emails) > MAX_ADDITIONAL_EMAILS:
+        errors[Blocks.BLOCK_ID_CONTACT_INFO_ADDITIONAL_EMAILS] = (
+            f"Use at most {MAX_ADDITIONAL_EMAILS} additional emails")
+    if not data.get('last_name'):
+        errors[Blocks.BLOCK_ID_CONTACT_INFO_FULL_NAME] = "Enter your first and last name"
+    if data.get(Blocks.PREFERRED_CONTACT_METHOD) == 'phone' and not (
+            data.get(Blocks.PREFERRED_CONTACT_METHOD_PHONE) or '').strip():
+        errors[Blocks.PREFERRED_CONTACT_METHOD_PHONE] = "Enter a phone number"
+
+    missing = [label for block_id, label in REQUIRED_SELECTIONS.items()
+               if not data.get(block_id)]
+    return errors, missing
+
+
+def missing_selection_view(missing):
+    items = "\n".join(f"• {label}" for label in missing)
+    return {
+        "type": "modal",
+        "title": {"type": "plain_text", "text": "Missing information"},
+        "close": {"type": "plain_text", "text": "Back"},
+        "blocks": [{
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"Please go back and select:\n{items}",
+            },
+        }],
+    }
+
+
+def not_authorized_view():
+    return {
+        "type": "modal",
+        "title": {"type": "plain_text", "text": "Not authorized"},
+        "close": {"type": "plain_text", "text": "Close"},
+        "blocks": [{
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "You are not allowed to open Azure support requests from Slack. "
+                        "Ask your workspace administrator for access.",
+            },
+        }],
+    }
 
 
 def open_support_modal_common(trigger_id, user_id, logger_message):
     """Common function to open support modal for both shortcut and slash command"""
     try:
+        if not is_user_allowed(user_id):
+            logger.warning("Slack user is not allowed to open support requests")
+            client.views_open(trigger_id=trigger_id, view=not_authorized_view())
+            return
+
         user_info = get_user_info(user_id)
         private_metadata = user_info
 
@@ -223,7 +319,6 @@ def open_support_modal(ack, body, client, logger):
     open_support_modal_common(trigger_id, user_id, 'Opened modal for support request via shortcut')
 
 
-# 🚨 CRITICAL FIX: Add the missing slash command handler
 @app.command("/azure-support")
 def handle_azure_support_command(ack, body, client, logger):
     ack()
@@ -241,7 +336,7 @@ def preload_azure_resources(private_metadata):
         def azure_resource():
             subscription_id = private_metadata[Blocks.AZURE_SUBSCRIPTION]
             select_azure_service_id = private_metadata[Blocks.AZURE_SERVICE]
-            options_handler.get_select_azure_subscription_resources_raw(
+            options_handler.get_select_azure_subscription_resources(
                 subscription_id,
                 select_azure_service_id)
 
@@ -275,9 +370,15 @@ def handle_app_mention(event, say):
     # Placeholder, possible approach to handle for user to request status
     # update on a support ticket etc.
     if command == "help":
-        say("Supported commands:\n• help - Show this message\n• status - Get the latest status")
+        say("Supported commands:\n"
+            "• help - Show this message\n"
+            "• status - Where to check Azure service status\n"
+            "Use `/azure-support` or the shortcut to open a support request.")
     elif command == "status":
-        say("Current status: All systems operational.")
+        say("I don't track live Azure status from chat. Check "
+            "<https://portal.azure.com/#view/Microsoft_Azure_Health/AzureHealthBrowseBlade/~/serviceIssues"
+            "|Azure Service Health> for issues affecting your subscriptions, or "
+            "<https://azure.status.microsoft/|Azure status> for broad outages.")
     else:
         say("Sorry, I didn't understand that command. Type `help` to see available commands.")
 
@@ -298,6 +399,26 @@ def handle_dm(event, say):
 
 @app.view(Shortcuts.OPEN_AZURE_SUPPORT_TICKET)
 def handle_view_submission(ack, body, client, logger):
+    submitted_data = body["view"]["state"]["values"]
+    private_metadata = get_private_metadata(body)
+    logger.debug(
+        "Received support submission with %s form fields",
+        len(submitted_data),
+    )
+
+    if not is_user_allowed(body.get("user", {}).get("id")):
+        ack({"response_action": "update", "view": not_authorized_view()})
+        return
+
+    data = map_submitted_data_to_flat_dict(submitted_data)
+    errors, missing = validate_submission(data)
+    if errors:
+        ack({"response_action": "errors", "errors": errors})
+        return
+    if missing:
+        ack({"response_action": "push", "view": missing_selection_view(missing)})
+        return
+
     ack({
         "response_action": "update",
         "view": {
@@ -308,14 +429,6 @@ def handle_view_submission(ack, body, client, logger):
         }
     })
 
-    submitted_data = body["view"]["state"]["values"]
-    private_metadata = get_private_metadata(body)
-    logger.debug(
-        "Received support submission with %s form fields",
-        len(submitted_data),
-    )
-
-    data = map_submitted_data_to_flat_dict(submitted_data)
     SupportTicketSubmissionHandler(
         data, private_metadata, azure_support, client, executor
     ).handle()
@@ -474,7 +587,7 @@ def options_azure_service_problem_classifications(ack, body):
         return
 
     data = options_handler.get_select_azure_service_problem_classifications(
-        private_metadata)
+        private_metadata, body.get("value", ""))
     ack(option_groups=data['values']) if data['type'] == 'option_groups' else ack(
         options=data['values'])
 
@@ -482,7 +595,11 @@ def options_azure_service_problem_classifications(ack, body):
 @app.options(Blocks.AZURE_RESOURCE)
 def options_azure_resource(ack, body):
     private_metadata = get_private_metadata(body)
-    option_groups = options_handler.get_select_azure_subscription_resources_mapped(private_metadata)
+    if not private_metadata.get(Blocks.AZURE_SUBSCRIPTION) or not private_metadata.get(Blocks.AZURE_SERVICE):
+        ack(options=[])
+        return
+    option_groups = options_handler.get_select_azure_subscription_resources_mapped(
+        private_metadata, body.get("value", ""))
     ack(option_groups=option_groups)
 
 

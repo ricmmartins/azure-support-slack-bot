@@ -7,8 +7,48 @@ from slack_sdk import WebClient
 from concurrent.futures import ThreadPoolExecutor
 from helpers import Blocks
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+SLACK_OPTION_TEXT_LIMIT = 75
+SLACK_MAX_OPTIONS = 100
+
+
+def _option_text(value):
+    value = str(value or '')
+    if len(value) <= SLACK_OPTION_TEXT_LIMIT:
+        return value
+    return value[:SLACK_OPTION_TEXT_LIMIT - 1] + '…'
+
+
+def _filter_option_groups(option_groups, user_input):
+    # Lets users reach entries beyond the option cap by typing part of the name.
+    query = (user_input or '').strip().casefold()
+    if not query:
+        return option_groups
+    filtered = []
+    for group in option_groups:
+        if query in group['label']['text'].casefold():
+            filtered.append(group)
+            continue
+        options = [o for o in group['options'] if query in o['text']['text'].casefold()]
+        if options:
+            filtered.append({**group, 'options': options})
+    return filtered
+
+
+def _cap_option_groups(option_groups, limit=SLACK_MAX_OPTIONS):
+    # Slack rejects more than 100 options in total or 100 groups.
+    remaining = limit
+    capped = []
+    for group in option_groups:
+        if remaining <= 0:
+            break
+        options = group['options'][:remaining]
+        if not options:
+            continue
+        remaining -= len(options)
+        capped.append({**group, 'options': options})
+    return capped
 
 
 class OptionsHandler:
@@ -19,12 +59,16 @@ class OptionsHandler:
 
     def get_select_azure_sub(self, user_input):
         input_list = self.azure_support.get_subscription_list()
+        query = (user_input or '').strip().casefold()
         options = []
         for il in input_list:
+            name = il.get('display_name') or il['id']
+            if query and query not in name.casefold() and query not in il['id'].casefold():
+                continue
             options.append(
-                {"text": {"type": "plain_text", "text": il['display_name']}, "value": il['id']}
+                {"text": {"type": "plain_text", "text": _option_text(name)}, "value": il['id']}
             )
-        return options
+        return options[:SLACK_MAX_OPTIONS]
 
     def get_select_azure_service(self, user_input, private_metadata):
         data_option_groups = self.azure_support.slack_get_support_services_filter_by_prefix(user_input)
@@ -33,16 +77,17 @@ class OptionsHandler:
             options = []
             for option in data_option_groups[dog]:
                 options.append(
-                    {"text": {"type": "plain_text", "text": option['displayName']}, "value": option['id']}
+                    {"text": {"type": "plain_text", "text": _option_text(option['displayName'])},
+                     "value": option['id']}
                 )
             option_groups.append({
                 "label": {
                     "type": "plain_text",
-                    "text": dog
+                    "text": _option_text(dog)
                 },
                 "options": options
             })
-        return option_groups
+        return _cap_option_groups(option_groups)
 
     @cached(cache=TTLCache(maxsize=1024, ttl=60 * 60))
     def get_select_azure_subscription_resources(self, subscription_id, select_azure_service_id):
@@ -54,7 +99,7 @@ class OptionsHandler:
 
         return data_option_groups
 
-    def get_select_azure_subscription_resources_mapped(self, private_metadata):
+    def get_select_azure_subscription_resources_mapped(self, private_metadata, user_input=''):
         subscription_id = private_metadata['select_azure_subscription']
         select_azure_service_id = private_metadata['select_azure_service']
 
@@ -65,16 +110,19 @@ class OptionsHandler:
             options = []
             for option in data_option_groups[dog]:
                 options.append({
-                    "text": {"type": "plain_text", "text": option['name']},
+                    "text": {"type": "plain_text", "text": _option_text(option['name'])},
                     "value": self.azure_support.string_to_hash(option['id'])
                 })
             option_groups.append({
                 "label": {
                     "type": "plain_text",
-                    "text": dog
+                    "text": _option_text(dog)
                 },
                 "options": options
             })
+        # Keep room for the "General question" group which must always be present.
+        option_groups = _cap_option_groups(
+            _filter_option_groups(option_groups, user_input), SLACK_MAX_OPTIONS - 1)
         options = [{"text": {"type": "plain_text", "text": "General question"}, "value": 'none'}]
         option_groups.append({
             "label": {
@@ -114,9 +162,10 @@ class OptionsHandler:
 
         return {"type": "options", "values": options}
 
-    def get_select_azure_service_problem_classifications(self, private_metadata):
+    def get_select_azure_service_problem_classifications(self, private_metadata, user_input=''):
         subscription_id = private_metadata['select_azure_subscription']
         select_azure_service_id = private_metadata['select_azure_service']
+        query = (user_input or '').strip().casefold()
         input_data = self.get_problem_classifications_options(subscription_id, select_azure_service_id)
         option_type = input_data['type']
         input_list = input_data['values']
@@ -126,26 +175,27 @@ class OptionsHandler:
             for il in input_list:
                 options.append(
                     {"text": {
-                        "type": "plain_text", "text": il['display_name'][:75]},
+                        "type": "plain_text", "text": _option_text(il['display_name'])},
                         "value": il['id']
                      })
-            response = options
+            response = [o for o in options if query in o['text']['text'].casefold()][:SLACK_MAX_OPTIONS]
         else:
             option_groups = []
             for dog in input_list:
                 options = []
                 for option in input_list[dog]:
                     options.append(
-                        {"text": {"type": "plain_text", "text": option['display_name'][:75]}, "value": option['id']}
+                        {"text": {"type": "plain_text", "text": _option_text(option['display_name'])},
+                         "value": option['id']}
                     )
                 option_groups.append({
                     "label": {
                         "type": "plain_text",
-                        "text": dog[:75]
+                        "text": _option_text(dog)
                     },
                     "options": options
                 })
-            response = option_groups
+            response = _cap_option_groups(_filter_option_groups(option_groups, user_input))
         logger.debug(f'Problem classifications response: {response}')
         return {
             'type': option_type,
@@ -177,14 +227,14 @@ class SupportTicketSubmissionHandler:
             )
         except Exception as e:
             logger.exception(f"Failed to get resource_id: {e}")
-            self._send_slack_error(self.private_metadata, "Failed to get resource ID.")
+            self._send_slack_error("Hello! We could not resolve the selected Azure resource.")
             return
 
         self.executor.submit(self._submit_support_ticket, self.data, self.private_metadata)
         logger.info('Support ticket submission task submitted')
 
     def _send_slack_error(self, text):
-        channel_id = self.private_metadata.get('channel_select_block')
+        channel_id = self.data.get('channel_select_block') or self.private_metadata.get('channel_select_block')
         user_id = self.private_metadata.get('user_id')
         channel = channel_id if channel_id else user_id
         if channel_id:
@@ -203,11 +253,11 @@ class SupportTicketSubmissionHandler:
                 self._notify_slack_success(res)
             else:
                 logger.warning('Azure support ticket creation failed')
-                self._send_slack_error(private_metadata, "Hello! We had some trouble creating the support ticket.")
+                self._send_slack_error("Hello! We had some trouble creating the support ticket.")
             logger.info('Support ticket submission finished')
         except Exception as e:
             logger.exception(f"Exception in submit_support_ticket: {e}")
-            self._send_slack_error(private_metadata, "Hello! We had some trouble creating the support ticket.")
+            self._send_slack_error("Hello! We had some trouble creating the support ticket.")
 
     def _notify_slack_success(self, res):
         channel_id = self.data.get('channel_select_block')

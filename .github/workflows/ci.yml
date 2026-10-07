@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-test.txt pip-audit
+      - name: Lint
+        run: flake8 .
+      - name: Test
+        run: pytest -q
+      - name: Audit dependencies
+        run: pip-audit -r requirements.txt
+
+  container:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t azure-support-slack-bot:ci .
+      - name: Smoke test
+        run: |
+          docker run -d --name bot -p 5000:5000 \
+            -e APP_ENV=test \
+            -e SLACK_BOT_TOKEN=xoxb-ci \
+            -e SLACK_SIGNING_SECRET=ci \
+            -e SLACK_BOT_ID=BCI \
+            azure-support-slack-bot:ci
+          for attempt in $(seq 1 20); do
+            if curl -fsS http://localhost:5000/healthz; then
+              test "$(docker exec bot id -un)" = "app"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs bot
+          exit 1

@@ -16,6 +16,9 @@ param secureWebhookObjectId string
 param secureWebhookIdentifierUri string
 param tenantId string = tenant().tenantId
 
+@description('Container image set by azd deploy; keeps re-provisioning from reverting to the placeholder image.')
+param appImageName string = ''
+
 var resourceToken = toLower(uniqueString(subscription().id, environmentName))
 var resourceGroupName = 'rg-${environmentName}'
 var tags = {
@@ -102,6 +105,7 @@ module app 'modules/container-app.bicep' = {
     secureWebhookClientId: secureWebhookClientId
     secureWebhookIdentifierUri: secureWebhookIdentifierUri
     tenantId: tenantId
+    appImageName: appImageName
     tags: tags
   }
   dependsOn: [

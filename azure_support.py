@@ -1,11 +1,13 @@
 import concurrent.futures
 import hashlib
 import json
-import time
+import os
 import re
 import urllib.parse
+import uuid
 import logging
 import threading
+import time
 
 from cachetools import cached, TTLCache
 from collections import OrderedDict
@@ -20,11 +22,12 @@ from azure.mgmt.support.models import (
 )
 
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 dataset_services_mapped_path = 'data/dataset_services_mapped.json'
+_RESOURCE_GROUP_PATTERN = re.compile(
+    r"/resourceGroups/([^/]+)", re.IGNORECASE)
+GENERAL_QUESTION_RESOURCE = 'none'
 
 
 class AzureSupportHelper:
@@ -171,15 +174,13 @@ class AzureSupportHelper:
         # Group by resource group
         grouped = {}
         for res in results:
-            resource_group = res.id.split('resourceGroups/')[1].split('/providers')[0]
-            try:
-                grouped.setdefault(resource_group, []).append({
-                    'id': res.id,
-                    'name': res.name
-                })
-            except (ValueError, IndexError):
-                # If resourceGroups not found or malformed id, skip
+            match = _RESOURCE_GROUP_PATTERN.search(res.id or '')
+            if not match:
                 continue
+            grouped.setdefault(match.group(1), []).append({
+                'id': res.id,
+                'name': res.name
+            })
 
         logger.info(
             "Grouped resources into %s resource groups", len(grouped))
@@ -228,9 +229,13 @@ class AzureSupportHelper:
         preferred_contact_method = data['select_preferred_contact_method']
         advanced_diagnostic_consent = data['select_advanced_diagnostic_information']
 
-        country = data.get('country', 'USA')
-        preferred_time_zone = data.get('preferred_time_zone', 'Eastern Standard Time')  # https://support.microsoft.com/help/973627/microsoft-time-zone-index-values
-        preferred_support_language = data.get('preferred_support_language', 'en-us')
+        country = data.get('country') or os.environ.get(
+            'SUPPORT_CONTACT_COUNTRY', 'USA')
+        # https://support.microsoft.com/help/973627/microsoft-time-zone-index-values
+        preferred_time_zone = data.get('preferred_time_zone') or os.environ.get(
+            'SUPPORT_PREFERRED_TIME_ZONE', 'Eastern Standard Time')
+        preferred_support_language = data.get('preferred_support_language') or os.environ.get(
+            'SUPPORT_PREFERRED_LANGUAGE', 'en-us')
 
         logger.info(
             "Preparing support ticket with %s validated fields", len(data))
@@ -258,7 +263,7 @@ class AzureSupportHelper:
 
         try:
             support_client = MicrosoftSupport(self.credentials, subscription_id)
-            ticket_name = f"s{service_id}_{int(time.time())}"
+            ticket_name = f"slack-{uuid.uuid4()}"
             logger.info(f"Creating support ticket: {ticket_name} ...")
             support_ticket = support_client.support_tickets.begin_create(
                 support_ticket_name=ticket_name,
@@ -284,13 +289,16 @@ class AzureSupportHelper:
             return {'success': False}
 
     def get_resource_id_by_resource_hash(self, subscription_id, azure_service_id, resource_hash):
+        if not resource_hash or resource_hash == GENERAL_QUESTION_RESOURCE:
+            return None
+
         # Optimize for second API call for same resource. LRU: move to end if accessed
         if resource_hash in self.hash_cache:
             self.hash_cache.move_to_end(resource_hash)
             return self.hash_cache[resource_hash]
 
         resource_types = self.get_resource_types_by_service_id(azure_service_id)
-        logger.info(resource_types)
+        logger.debug("Resource types for service: %s", resource_types)
         resources = self.get_sub_resources_by_resource_type_concurrent(
             self.credentials, subscription_id, tuple(resource_types))
 
@@ -302,7 +310,7 @@ class AzureSupportHelper:
         for rl in resources:
             for r in resources[rl]:
                 rid = r['id']
-                if AzureSupportHelper.string_to_hash(rid) == resource_hash:
+                if self.string_to_hash(rid) == resource_hash:
                     return rid
 
         return None

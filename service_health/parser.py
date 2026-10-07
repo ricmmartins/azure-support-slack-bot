@@ -77,6 +77,13 @@ def _is_service_health(value):
         isinstance(value, str) and value.strip().casefold() == "servicehealth")
 
 
+_RESOLVED_STAGES = {
+    "resolved", "complete", "completed", "canceled", "cancelled", "closed",
+}
+_UPDATED_STAGES = {"updated", "rescheduled", "inprogress", "in progress"}
+_ACTIVE_STAGES = {"active", "planned", "activated"}
+
+
 def _parse_lifecycle(context, properties):
     candidates = [
         properties.get("stage"),
@@ -87,14 +94,31 @@ def _parse_lifecycle(context, properties):
         for item in candidates
         if isinstance(item, str) and item.strip()
     ]
-    if "resolved" in normalized:
+    if any(item in _RESOLVED_STAGES for item in normalized):
         return LifecycleStatus.RESOLVED
-    if "updated" in normalized:
+    if any(item in _UPDATED_STAGES for item in normalized):
         return LifecycleStatus.UPDATED
-    if "active" in normalized:
+    if any(item in _ACTIVE_STAGES for item in normalized):
         return LifecycleStatus.ACTIVE
     raise InvalidServiceHealthPayload(
-        "Service Health status must be Active, Updated, or Resolved")
+        "Service Health stage/status is not supported")
+
+
+_BLOCK_TAG_PATTERN = re.compile(
+    r"<\s*(br|/p|/div|/li|/h[1-6]|/tr)\s*/?\s*>", re.IGNORECASE)
+_LIST_ITEM_PATTERN = re.compile(r"<\s*li\b[^>]*>", re.IGNORECASE)
+_TAG_PATTERN = re.compile(r"<[^>]+>")
+_BLANK_LINES_PATTERN = re.compile(r"\n{3,}")
+
+
+def _html_to_text(value):
+    # Service Health communications are HTML fragments; Slack needs plain text.
+    text = _BLOCK_TAG_PATTERN.sub("\n", value)
+    text = _LIST_ITEM_PATTERN.sub("• ", text)
+    text = _TAG_PATTERN.sub("", text)
+    text = html.unescape(text).replace("\r\n", "\n").replace("\xa0", " ")
+    lines = [line.strip() for line in text.split("\n")]
+    return _BLANK_LINES_PATTERN.sub("\n\n", "\n".join(lines)).strip()
 
 
 def _parse_impacted_services(raw_value):
@@ -192,7 +216,7 @@ def parse_service_health_alert(payload):
         title=html.unescape(_required_string(properties, "title")),
         impact_start_time=_parse_datetime(
             properties.get("impactStartTime"), "impactStartTime"),
-        communication=html.unescape(
+        communication=_html_to_text(
             _required_string(properties, "communication")),
         impacted_services=_parse_impacted_services(
             properties.get("impactedServices")),

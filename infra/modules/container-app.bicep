@@ -20,6 +20,34 @@ param secureWebhookIdentifierUri string
 param tenantId string
 param tags object
 
+@description('Image deployed by azd (SERVICE_APP_IMAGE_NAME). Empty on first provision, which uses a placeholder image.')
+param appImageName string = ''
+
+var placeholderImage = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
+var hasAppImage = !empty(appImageName)
+var appProbes = [
+  {
+    type: 'Liveness'
+    httpGet: {
+      path: '/healthz'
+      port: 5000
+      scheme: 'HTTP'
+    }
+    initialDelaySeconds: 10
+    periodSeconds: 30
+  }
+  {
+    type: 'Readiness'
+    httpGet: {
+      path: '/readyz'
+      port: 5000
+      scheme: 'HTTP'
+    }
+    initialDelaySeconds: 15
+    periodSeconds: 15
+  }
+]
+
 resource environment 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: 'cae-${environmentName}'
   location: location
@@ -103,7 +131,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
       containers: [
         {
           name: 'app'
-          image: 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
+          image: hasAppImage ? appImageName : placeholderImage
           resources: {
             cpu: json('0.5')
             memory: '1Gi'
@@ -142,8 +170,9 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
               value: serviceHealthRoutesJson
             }
             {
+              // v1 tokens use the Application ID URI as aud; v2 tokens use the client ID.
               name: 'SERVICE_HEALTH_EXPECTED_AUDIENCE'
-              value: secureWebhookIdentifierUri
+              value: '${secureWebhookIdentifierUri},${secureWebhookClientId}'
             }
             {
               name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
@@ -154,28 +183,8 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
               value: 'azure-support-slack-bot'
             }
           ]
-          probes: [
-            {
-              type: 'Liveness'
-              httpGet: {
-                path: '/healthz'
-                port: 5000
-                scheme: 'HTTP'
-              }
-              initialDelaySeconds: 10
-              periodSeconds: 30
-            }
-            {
-              type: 'Readiness'
-              httpGet: {
-                path: '/readyz'
-                port: 5000
-                scheme: 'HTTP'
-              }
-              initialDelaySeconds: 15
-              periodSeconds: 15
-            }
-          ]
+          // The placeholder image does not serve /healthz or /readyz on port 5000.
+          probes: hasAppImage ? appProbes : []
         }
       ]
       scale: {
@@ -221,6 +230,7 @@ resource authConfig 'Microsoft.App/containerApps/authConfigs@2024-03-01' = {
         validation: {
           allowedAudiences: [
             secureWebhookIdentifierUri
+            secureWebhookClientId
           ]
           defaultAuthorizationPolicy: {
             allowedApplications: [

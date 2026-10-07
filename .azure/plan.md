@@ -69,16 +69,18 @@ No deployment is part of this change. Subscription usage and regional quotas mus
 
 | Check | Command | Result |
 |---|---|---|
-| Python tests | `python -m pytest -q` | Passed: 45 tests |
+| Python tests | `python -m pytest -q` | Passed: 79 tests (includes production-hardening regressions) |
 | Python lint | `python -m flake8 .` | Passed |
+| Dependency advisories | OSV.dev batch query for pinned and transitive packages | Fixed: Flask 3.1.3, python-dotenv 1.2.2, transitive security floors added |
+| Static security patterns | grep for eval/exec/pickle/shell/TLS bypass/hardcoded secrets | No findings (Bandit/pip-audit unavailable: PyPI downloads blocked on the validation network) |
 | Bicep compilation | `az bicep build --file .\infra\main.bicep --stdout` | Passed without diagnostics |
 | Bicep lint | `az bicep lint --file .\infra\main.bicep` | Passed without diagnostics |
 | Entra setup syntax | PowerShell parser for `scripts\configure-secure-webhook.ps1` | Passed |
 | AZD installed | `azd version` | Passed: 1.24.1 |
 | AZD authentication | `azd auth login --check-status` | Passed |
-| AZD package configuration | `azd package --no-prompt` | Passed; tagged the deployment image |
-| Container package/build | `docker build --quiet -t azure-support-slack-bot:mvp .` | Passed |
-| Container smoke test | Run final image and call `GET /healthz` | Passed as non-root user `app` |
+| AZD package configuration | `azd package --no-prompt` | Passed before hardening; not re-run (Docker daemon unavailable) |
+| Container package/build | `docker build --quiet -t azure-support-slack-bot:mvp .` | Passed before hardening; must be re-run after dependency floors |
+| Container smoke test | Run final image and call `GET /healthz` | Passed before hardening as non-root user `app` |
 | Provision preview | Not run | Requires an explicit target subscription/location and executes the Entra pre-provision hook |
 | Azure Policy validation | Not run | Requires the future deployment subscription |
 
@@ -95,7 +97,7 @@ changes were made during this validation.
 - [ ] Subscription/location check
 - [x] Aspire checks skipped because this is not an Aspire project
 - [ ] Provision preview
-- [x] Container build verification
+- [ ] Container build verification (re-run required after hardening)
 - [x] Package validation
 - [ ] Azure Policy validation
 

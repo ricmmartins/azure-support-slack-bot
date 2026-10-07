@@ -28,6 +28,9 @@
     },
     "tenantId": {
       "value": "${AZURE_TENANT_ID}"
+    },
+    "appImageName": {
+      "value": "${SERVICE_APP_IMAGE_NAME=}"
     }
   }
 }
