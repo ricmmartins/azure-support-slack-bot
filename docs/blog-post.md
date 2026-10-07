@@ -1,169 +1,436 @@
-# Bring Azure Service Health incidents into Slack with Container Apps
+# Is it Azure or is it us? Routing Azure Service Health into Slack for multi-subscription teams
 
-Most startups run incident response in Slack. Azure Service Health
-notifications, however, usually land in the Azure portal or in an email inbox.
-When something breaks at 2 a.m., the on-call engineer ends up asking in a
-channel: "Is Azure down, or is it us?"
+*Audience: platform, SRE and on-call teams at growth- and late-stage startups
+running production on Azure across several subscriptions.*
 
-This post walks through a small open-source service that answers that question
-where the team already is. It posts every Azure Service Health incident into the
-right Slack channel as a single message that updates in place, from *Active*
-through *Updated* to *Resolved*. The code, infrastructure as code, and
-deployment scripts are on GitHub:
-[ricmmartins/azure-support-slack-bot](https://github.com/ricmmartins/azure-support-slack-bot).
+At 2:14 a.m. your p99 latency doubles. The on-call engineer opens the
+dashboards, sees errors from the database client, and starts the usual
+checklist: recent deploys, feature flags, connection pools. Forty minutes
+later someone opens the Azure portal and finds a Service Health incident for
+the database service in your region, published twenty minutes before the page
+went out.
 
-## What it does
+Those forty minutes are the gap this post is about. Azure publishes service
+issues, planned maintenance, health advisories and security advisories through
+[Azure Service Health](https://learn.microsoft.com/azure/service-health/overview),
+scoped to the subscriptions, services and regions you actually use. The data
+is there. What most teams lack is getting it to the right people, in the place
+they already work, without adding noise.
 
-An Azure Monitor Activity Log Alert sends Service Health events (service issues,
-planned maintenance, health advisories, and security advisories) to the service.
-For each event the service:
+We built a small open-source service that does that: it turns Service Health
+events into Slack messages, routes them to the right channel, and keeps **one
+message per incident** that is edited as the incident progresses. This post
+covers why we built it the way we did, the trade-offs, and a full tutorial you
+can follow end to end.
 
-- **Routes** the incident to a channel using rules for subscription, service,
-  and region, with a default channel for everything else.
-- **Posts one root message per incident** with the status, impacted services
-  and regions, and a link to the incident in the Azure portal.
-- **Updates that same message** as Microsoft publishes new updates, so the
-  incident history and the team's discussion stay in one thread.
+Code: <https://github.com/ricmmartins/azure-support-slack-bot>
 
-It is notification-only. The Slack app needs a single bot scope, `chat:write`,
-and Slack never calls back into Azure.
+## The problem with the defaults
+
+Service Health alerts already support email, SMS and webhooks through
+[Action Groups](https://learn.microsoft.com/azure/azure-monitor/alerts/action-groups).
+At startup scale, three things get in the way:
+
+- **Noise.** A single incident produces several notifications: Active, a
+  handful of updates, Resolved. Sent to email or posted as new chat messages,
+  they bury each other. People mute the channel, and then they miss the next
+  real one.
+- **Ownership.** With a production subscription per product, plus shared
+  platform and data subscriptions, a database incident in East US matters to
+  one team and is noise to everyone else.
+- **Context.** During an incident the first question is "is it Azure or is it
+  us?" The answer should be in the channel where the incident is already being
+  discussed, not in someone's inbox.
+
+The goal was simple: when Azure has a problem that affects you, the right
+channel sees one message within seconds, and that message tells the full story
+as it changes.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    AM[Azure Monitor<br/>Service Health alert] -- "Secure Webhook<br/>(Entra token)" --> ACA
-    subgraph Azure
-        ACA[Container Apps<br/>Flask + Gunicorn]
-        KV[Key Vault]
-        TS[Table Storage]
+    SH[Azure Service Health] --> ALA[Activity Log Alert<br/>one per subscription]
+    ALA --> AG[Action Group<br/>Secure Webhook]
+    AG -- "HTTPS + Entra token" --> ACA
+    subgraph rg["Resource group rg-&lt;env&gt;"]
+        ACA[Container App<br/>Easy Auth + Flask]
+        KV[Key Vault<br/>Slack token]
+        TS[Table Storage<br/>incident state]
         AI[Application Insights]
         ACR[Container Registry]
-        MI((Managed identity))
     end
-    ACA --> MI
-    MI --> KV
-    MI --> TS
-    MI --> ACR
+    ACA -- managed identity --> KV
+    ACA -- managed identity --> TS
     ACA --> AI
-    ACA -- "chat.postMessage / chat.update" --> Slack[Slack channel]
+    ACR -- managed identity pull --> ACA
+    ACA -- "chat.postMessage / chat.update" --> SL[Slack channels]
 ```
 
-The service is a small Python Flask app running in one container on
-[Azure Container Apps](https://learn.microsoft.com/azure/container-apps/overview).
+Each monitored subscription has an Activity Log Alert on the `ServiceHealth`
+category. It triggers an Action Group that calls the service with a
+[Secure Webhook](https://learn.microsoft.com/azure/azure-monitor/alerts/action-groups#secure-webhook)
+using the
+[Common Alert Schema](https://learn.microsoft.com/azure/azure-monitor/alerts/alerts-common-schema).
+The service runs on Azure Container Apps, stores a small record per incident in
+Table Storage, and posts or edits a Slack message. Slack is output only: the
+bot has one scope, `chat:write`, and receives nothing from Slack.
 
-| Concern | Azure service |
-|---|---|
-| Compute | Azure Container Apps |
-| Images | Azure Container Registry, pulled with managed identity |
-| Secrets | Azure Key Vault, exposed to the app as Key Vault secret references |
-| Incident state | Azure Table Storage, accessed with RBAC (shared keys disabled) |
-| Identity | One user-assigned managed identity for every Azure call |
-| Observability | Workspace-based Application Insights via OpenTelemetry |
-| Alerts | Activity Log Alert and Action Group with a Secure Webhook |
+## Design decisions and trade-offs
 
-The managed identity holds no subscription-wide roles. It reads its own Key
-Vault secrets, uses its own Storage account, and pulls from its own registry.
+### Authentication: Entra tokens, not shared secrets
 
-Everything is described in Bicep and deployed with the
-[Azure Developer CLI](https://learn.microsoft.com/azure/developer/azure-developer-cli/overview):
+The usual way to protect a webhook is a secret in the URL or a header. Those
+leak into logs and need rotation. Action Groups can instead obtain a Microsoft
+Entra token for an app registration you own and send it as a bearer token.
 
-```sh
-azd env new
-azd env set SLACK_BOT_TOKEN "<xoxb-token>"
-azd env set SERVICE_HEALTH_ROUTES_JSON '{"default_channel_id":"C0123456789","rules":[]}'
+The service validates it in two layers. First,
+[Container Apps authentication](https://learn.microsoft.com/azure/container-apps/authentication)
+(Easy Auth) verifies the signature, issuer and audience before the request
+reaches the code. Then the app checks three claims itself: the caller is the
+Azure Monitor application, the token carries the `ActionGroupsSecureWebhook`
+app role, and the audience is this API. There is no shared secret to rotate,
+and the endpoint can stay public because unauthenticated calls get a 401.
+
+The cost is setup complexity: an app registration, an app role, and a role
+assignment to the Azure Monitor service principal. A pre-provision script does
+this, but it needs Entra permissions that many engineers do not have. We
+document a path where an admin runs that one step and hands over four IDs.
+
+### State: one message per incident
+
+Service Health identifies an incident with a tracking ID, and every update
+reuses it. The service keys a Table Storage entity on the subscription ID and
+a hash of that tracking ID. The entity holds the Slack channel, the message
+timestamp and the last processed update. The first event posts a message;
+later events call `chat.update` on it.
+
+Why Table Storage rather than Cosmos DB or a SQL database? The workload is a
+few writes per incident, and we only need single-entity reads and conditional
+writes. Table Storage does that for cents a month, with no capacity planning,
+and supports Entra-only access with shared keys turned off.
+
+### Concurrency and retries
+
+Action Groups
+[retry](https://learn.microsoft.com/azure/azure-monitor/alerts/action-groups#webhook)
+on 408, 429, 503, 504 and network errors. Retries can overlap, and with more
+than one replica two requests for the same incident can land at the same time.
+Three rules keep that safe:
+
+1. Every write to the incident entity uses an ETag. A short lease (30 seconds)
+   lets exactly one request work on an incident at a time; the other gets a
+   503 and is retried later.
+2. Identical retries and updates older than the last processed one return 200
+   and do nothing.
+3. Status codes match the retry policy. Transient Slack or Storage problems
+   return 503 so Azure Monitor retries. Invalid payloads and permanent Slack
+   errors (for example, the bot is not in the channel) return 4xx, so a broken
+   configuration does not cause a retry storm.
+
+What we did **not** solve: if the container crashes after Slack accepts the
+first post but before its timestamp is saved, a retry posts a second message.
+Closing that window needs a transactional outbox. For a notification channel,
+an occasional duplicate is acceptable; a missed incident is not.
+
+### Routing across subscriptions
+
+Routing is a JSON document with a default channel and rules that filter by
+subscription, service and region. The most specific, highest-priority rule
+wins, and an incident stays in the channel where it was first posted. That
+maps to how most platform teams are organized: per-product channels for their
+subscriptions, a data channel for database services, and a catch-all for the
+platform team.
+
+Onboarding another subscription is one `az deployment sub create` command
+that adds an alert and an Action Group pointing at the same webhook. For
+dozens of subscriptions, the same settings can be applied with
+[Azure Policy](https://learn.microsoft.com/azure/service-health/service-health-alert-deploy-policy).
+
+### Cost versus latency
+
+The Container App runs one always-on replica with 0.5 vCPU and 1 GiB, so Azure
+Monitor never waits on a cold start. With the
+[Container Apps free grant](https://learn.microsoft.com/azure/container-apps/billing),
+the whole stack costs roughly **US$20–45 per month**. Setting `minReplicas` to
+0 cuts most of the compute cost if you can live with a slower first message.
+
+### Secrets and identity
+
+The Slack token is the only secret. azd writes it to Key Vault during
+provisioning, and the container gets a Key Vault reference resolved through a
+user-assigned managed identity. The same identity reads and writes Table
+Storage and pulls the image from Container Registry. The app has no
+connection strings or storage keys.
+
+## Tutorial
+
+You need about 30 minutes. Commands are for bash; PowerShell 7 versions follow
+where they differ.
+
+### 1. Prerequisites
+
+Install:
+
+- [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli)
+- [Azure Developer CLI (azd)](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd)
+- [PowerShell 7](https://learn.microsoft.com/powershell/scripting/install/installing-powershell),
+  required on every OS because the setup hook is a PowerShell script
+- [Python 3.11+](https://www.python.org/downloads/), optional, for local runs
+  and tests
+- [Docker](https://docs.docker.com/get-docker/), optional; the image is built
+  in Azure Container Registry
+
+Permissions:
+
+- **Microsoft Entra ID:**
+  [Application Administrator](https://learn.microsoft.com/entra/identity/role-based-access-control/permissions-reference#application-administrator)
+  or Cloud Application Administrator, to create the app registration and grant
+  its role to Azure Monitor.
+- **Azure subscription:**
+  [Owner](https://learn.microsoft.com/azure/role-based-access-control/built-in-roles),
+  or Contributor plus User Access Administrator, because the template creates
+  role assignments.
+
+```bash
+git clone https://github.com/ricmmartins/azure-support-slack-bot.git
+cd azure-support-slack-bot
+```
+
+### 2. Create the Slack app
+
+1. Go to <https://api.slack.com/apps> → **Create New App** → **From a
+   manifest**, pick your workspace, choose YAML, and paste the contents of
+   `slack_app_manifest.yaml` from the repository.
+2. Select **Install to Workspace** → **Allow**.
+3. Under **OAuth & Permissions**, copy the **Bot User OAuth Token**
+   (`xoxb-...`).
+4. In every channel the bot should post to, run:
+
+   ```text
+   /invite @azure-service-health
+   ```
+
+5. Get each channel ID: click the channel name, open **About**, and copy the
+   **Channel ID** at the bottom (it looks like `C0123456789`).
+
+### 3. Write the routing configuration
+
+Create `routes.json`:
+
+```json
+{
+  "default_channel_id": "C0000000000",
+  "rules": [
+    {
+      "channel_id": "C1111111111",
+      "priority": 100,
+      "subscription_ids": ["00000000-0000-0000-0000-000000000000"]
+    },
+    {
+      "channel_id": "C2222222222",
+      "priority": 50,
+      "services": ["Azure Kubernetes Service", "Virtual Machines"]
+    },
+    {
+      "channel_id": "C3333333333",
+      "priority": 50,
+      "services": ["Azure Database for PostgreSQL flexible servers"],
+      "regions": ["East US", "East US 2"]
+    }
+  ]
+}
+```
+
+Every filter in a rule must match. Unmatched incidents go to
+`default_channel_id`. Use the service and region names shown in Service
+Health, such as `East US` rather than `eastus`.
+
+### 4. Deploy
+
+Sign in to both CLIs with the same account and tenant, then create an
+environment:
+
+```bash
+az login
+azd auth login
+azd env new shh-prod --subscription "<subscription-id>" --location eastus2
+```
+
+Set the Slack token and the routing JSON (as a single line):
+
+```bash
+azd env set SLACK_BOT_TOKEN "xoxb-your-token"
+azd env set SERVICE_HEALTH_ROUTES_JSON "$(tr -d '\r\n' < routes.json)"
+```
+
+PowerShell 7:
+
+```powershell
+azd env set SLACK_BOT_TOKEN "xoxb-your-token"
+$routes = Get-Content routes.json -Raw | ConvertFrom-Json | ConvertTo-Json -Depth 10 -Compress
+azd env set SERVICE_HEALTH_ROUTES_JSON $routes
+```
+
+Provision, deploy, and provision again:
+
+```bash
 azd provision
 azd deploy
 azd provision
 ```
 
-A pre-provision hook creates the Microsoft Entra app registration that protects
-the webhook. The second `azd provision` switches the Container App from the
-placeholder image to the real one and turns on health probes.
+- The **first provision** runs the hook that creates the Entra app
+  registration and app role and grants the role to Azure Monitor. It stores
+  `AZURE_TENANT_ID`, `SERVICE_HEALTH_API_CLIENT_ID`,
+  `SERVICE_HEALTH_API_OBJECT_ID` and `SERVICE_HEALTH_API_IDENTIFIER_URI` in the
+  azd environment, then creates all Azure resources. The Container App starts
+  with a placeholder image and no health probes, because your image does not
+  exist yet.
+- **`azd deploy`** builds the image in Container Registry and rolls it out.
+- The **second provision** applies the real image to the template and turns
+  on the `/healthz` and `/readyz` probes.
 
-## Accepting calls only from Azure Monitor
+After that, use `azd deploy` for code changes and `azd provision` for
+configuration changes.
 
-The webhook is a public HTTPS endpoint, so it has to reject anything that is
-not Azure Monitor. Action Groups support a
-[Secure Webhook](https://learn.microsoft.com/azure/azure-monitor/alerts/action-groups#secure-webhook)
-that attaches a Microsoft Entra token to every call. The deployment registers an
-API app with an `ActionGroupsSecureWebhook` app role and assigns that role to
-the Azure Monitor service principal.
+If you lack the Entra role, an admin can run `azd hooks run preprovision` in
+their own azd environment and send you the four `AZURE_TENANT_ID` /
+`SERVICE_HEALTH_API_*` values to set with `azd env set`.
 
-Container Apps
-[built-in authentication](https://learn.microsoft.com/azure/container-apps/authentication)
-validates the token signature and issuer, then forwards the caller's claims in
-the `X-MS-CLIENT-PRINCIPAL` header. Container Apps strips any copy of that
-header sent by a client, so the app can trust it. The app then checks three
-things itself: the caller application ID belongs to Azure Monitor, the token
-carries the app role, and the audience matches the API.
+### 5. Validate
 
-Two lessons from production hardening:
+```bash
+APP_URI=$(azd env get-value SERVICE_APP_URI)
+RG=$(azd env get-value AZURE_RESOURCE_GROUP)
+APP_NAME=$(azd env get-value SERVICE_APP_NAME)
+ENV_NAME=$(azd env get-value AZURE_ENV_NAME)
 
-1. **Accept both audience formats.** The Secure Webhook app is configured for
-   Entra v2 access tokens, where `aud` is the client ID GUID rather than the
-   `api://` identifier URI. Both the platform and the application accept both.
-2. **Fail closed.** If `APP_ENV` is missing, the app assumes production and
-   refuses to serve the webhook without an expected audience. Only an explicit
-   `APP_ENV=development` disables the identity check for local testing.
+curl -sS "$APP_URI/healthz"     # {"status":"healthy"}
+curl -sS "$APP_URI/readyz"      # {"status":"ready"}
 
-## At-least-once delivery without duplicate Slack messages
+# Anonymous calls must be rejected
+curl -sS -o /dev/null -w "%{http_code}\n" -X POST "$APP_URI/api/service-health" \
+  -H "Content-Type: application/json" --data @docs/sample-service-health-alert.json
+# 401
+```
 
-Action Groups retry webhooks that return 408, 429, 503, or 504, and several
-container replicas may receive related events at the same time. The service
-turns that into "one Slack message per incident, updated in order".
+PowerShell:
 
-Each incident is keyed by subscription and a hash of the Service Health tracking
-ID. The Table Storage entity holds the Slack channel, the message timestamp, the
-last processed update, and a short lease. Every write uses an ETag condition,
-so two replicas cannot both claim the same incident. The flow is:
+```powershell
+$APP_URI = azd env get-value SERVICE_APP_URI
+Invoke-RestMethod "$APP_URI/healthz"
+Invoke-RestMethod "$APP_URI/readyz"
+```
 
-1. Claim the incident with a conditional insert or update.
-2. Skip identical retries and older updates, and return 200 so Azure Monitor
-   stops retrying.
-3. Post or update the Slack message.
-4. Persist the Slack timestamp and release the lease.
+Now send a signed test from Azure Monitor. In the portal, open **Monitor** →
+**Alerts** → **Action groups** → `ag-<env>-service-health` → **Test**, choose
+**Service health alert**, and run it. A message titled
+`TestActionGroup-TestServiceHealthAlert` appears in your default channel. The
+same test from the CLI:
 
-Transient Slack or Storage errors return 503 so the Action Group retries.
-Invalid payloads and permanent Slack errors, such as a channel the bot was
-never invited to, return 4xx so the platform does not retry forever. If someone
-deletes the tracked Slack message, the next update posts a new root message and
-stores its timestamp instead of failing.
+```bash
+az monitor action-group test-notifications create \
+  --resource-group "$RG" \
+  --action-group "ag-$ENV_NAME-service-health" \
+  --alert-type servicehealth \
+  --add-action webhook slack-service-health "$(azd env get-value SERVICE_HEALTH_WEBHOOK_URI)" \
+    useaadauth "$(azd env get-value SERVICE_HEALTH_API_OBJECT_ID)" \
+    "$(azd env get-value SERVICE_HEALTH_API_IDENTIFIER_URI)" usecommonalertschema
+```
 
-There is still a small window between a successful first post and saving its
-timestamp. A crash in that window can produce a duplicate message on retry.
-Removing it completely would need a transactional outbox, which is more than
-this workload needs. The README documents how to reconcile it.
+The [test payload](https://learn.microsoft.com/azure/azure-monitor/alerts/alerts-payload-samples#sample-test-action-service-health-alert)
+always uses the same tracking ID, so a second test returns `duplicate` and
+posts nothing. That is deduplication working.
 
-## Operating it
+Logs and telemetry:
 
-Application Insights collects requests, dependency calls to Slack and Table
-Storage, logs, and custom counters. A good first alert is a sustained rate of
-503 responses on `/api/service-health`, which means Slack or Storage is failing
-and Azure Monitor is retrying. The repository includes starter Kusto queries.
+```bash
+az containerapp logs show --name "$APP_NAME" --resource-group "$RG" --follow --tail 50
+```
 
-The project has automated tests covering payload parsing, routing, identity
-checks, concurrency and retries, and Slack rendering. A GitHub Actions workflow
-runs lint, tests, a dependency audit, and a container build with a smoke test
-on every push.
+In the Log Analytics workspace `log-<env>`:
 
-## Before you run it in production
+```kusto
+AppRequests
+| where Url has "/api/service-health"
+| summarize count() by ResultCode, bin(TimeGenerated, 1h)
+```
 
-Know the trade-offs before adopting it:
+### 6. Add more subscriptions
 
-- Key Vault and Storage use RBAC but keep public network access. Add private
-  endpoints and VNet integration if your policies require network isolation.
-- The Activity Log Alert is scoped to one subscription. Deploy the included
-  alert module in each additional subscription you want to monitor.
-- Key Vault purge protection is on, so `azd down` leaves a soft-deleted vault
-  for the retention period.
+For each additional subscription in the same tenant:
 
-## Try it
+```bash
+az deployment sub create \
+  --subscription "<other-subscription-id>" \
+  --name service-health-slack-alert \
+  --location eastus2 \
+  --template-file infra/alert-subscription.bicep \
+  --parameters \
+    environmentName="$(azd env get-value AZURE_ENV_NAME)" \
+    webhookUri="$(azd env get-value SERVICE_HEALTH_WEBHOOK_URI)" \
+    secureWebhookObjectId="$(azd env get-value SERVICE_HEALTH_API_OBJECT_ID)" \
+    secureWebhookIdentifierUri="$(azd env get-value SERVICE_HEALTH_API_IDENTIFIER_URI)"
+```
 
-Clone the repository, create the Slack app from the included manifest, invite
-the bot to your incident channels, and deploy it to a test subscription with the
-`azd` commands above. Issues and pull requests are welcome. If you are a startup
-building on Azure, check out
-[Microsoft for Startups](https://www.microsoft.com/startups) for credits,
-technical guidance, and access to experts who can help you run workloads like
-this with confidence.
+PowerShell uses the same command with backticks for line breaks and
+`(azd env get-value NAME)` in place of `"$(...)"`; the README has the full
+version.
+
+### 7. When something fails
+
+| Symptom | Cause and fix |
+|---|---|
+| 422 and `not_in_channel` or `channel_not_found` in the logs | The bot is not in the channel, or the ID is wrong. Run `/invite @azure-service-health` and use the `C...` ID. |
+| 401 `authentication_required` | The Action Group webhook does not have the secure webhook option on. Run `azd provision`. |
+| 401 with no body | Easy Auth rejected the token, usually an audience mismatch. Check `az containerapp auth show`. |
+| 403 and `does not have the required app role` | The role assignment to Azure Monitor is missing. Run `azd provision`; tokens can be cached for up to an hour. |
+| 403 and `audience is not authorized` | The app registration was recreated. Clear `SERVICE_HEALTH_API_OBJECT_ID` and `SERVICE_HEALTH_API_CLIENT_ID` with `azd env set` and provision again. |
+| Hook fails with `Authorization_RequestDenied` | Missing Entra role. Ask an admin to run `azd hooks run preprovision`. |
+| Provision fails because the Key Vault exists in a deleted state | Purge protection keeps deleted vaults for 90 days. Use a new azd environment name. |
+| 503 for a few minutes after the first deploy | Role assignments are still propagating. Azure Monitor retries on its own. |
+
+### 8. Cost and cleanup
+
+Expect roughly US$20–45 per month (Container Apps is most of it). Check your
+region with the [pricing calculator](https://azure.microsoft.com/pricing/calculator/).
+
+To remove everything:
+
+```bash
+CLIENT_ID=$(azd env get-value SERVICE_HEALTH_API_CLIENT_ID)
+azd down --purge
+az ad app delete --id "$CLIENT_ID"
+```
+
+Also delete `rg-<env>-service-health-alerts` in any extra subscriptions, and
+remove the app from Slack to revoke the token. The Key Vault stays
+soft-deleted for 90 days because purge protection is on.
+
+## Known limitations
+
+- Monitored subscriptions must be in the same Entra tenant.
+- Ingress is public, protected by Entra tokens. Key Vault, Storage and
+  Container Registry allow public network access with RBAC-only data access.
+  Add private endpoints if your compliance baseline requires them.
+- A crash at the wrong moment can cause a duplicate Slack message.
+- Rotating the Slack token needs `azd env set` and `azd provision`.
+
+## Where to take it next
+
+Ideas that fit a late-stage platform team:
+
+- Roll out the alert with Azure Policy so every new subscription is covered
+  from day one.
+- Add a rule per product team and link each message to your runbook or
+  status page.
+- Forward the same events to your incident tool (PagerDuty, Opsgenie,
+  incident.io) for Sev1-level service issues in your primary regions.
+- Track `service_health.requests` in Application Insights and alert when the
+  service returns 503s for more than a few minutes.
+
+If you are building on Azure, the
+[Microsoft for Startups](https://www.microsoft.com/startups) program offers
+Azure credits, technical guidance and access to Microsoft experts as you
+scale. Issues and pull requests on the repository are welcome.

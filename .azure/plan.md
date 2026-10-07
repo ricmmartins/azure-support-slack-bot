@@ -68,13 +68,13 @@ No deployment is part of this change. Subscription usage and regional quotas mus
 
 | Check | Command | Result |
 |---|---|---|
-| Python tests | `python -m pytest -q` | Passed: 42 tests (includes production-hardening regressions) |
+| Python tests | `python -m pytest -q` | Passed: 57 tests (includes production-hardening and failure-mode regressions) |
 | Python lint | `python -m flake8 .` | Passed |
 | Dependency advisories | OSV.dev batch query for pinned and transitive packages | Fixed: Flask 3.1.3, python-dotenv 1.2.2, transitive security floors added |
 | Static security patterns | grep for eval/exec/pickle/shell/TLS bypass/hardcoded secrets | No findings |
 | Dependency audit (CI) | `pip-audit -r requirements.txt` in GitHub Actions | Passed: no known vulnerabilities |
-| Bicep compilation | `az bicep build --file .\infra\main.bicep --stdout` | Passed without diagnostics |
-| Bicep lint | `az bicep lint --file .\infra\main.bicep` | Passed without diagnostics |
+| Bicep compilation | `az bicep build` for `infra\main.bicep` and `infra\alert-subscription.bicep` (local and CI `infra` job) | Passed without diagnostics |
+| Bicep lint | `az bicep lint` for both templates (local and CI) | Passed without diagnostics |
 | Entra setup syntax | PowerShell parser for `scripts\configure-secure-webhook.ps1` | Passed |
 | AZD installed | `azd version` | Passed: 1.24.1 |
 | AZD authentication | `azd auth login --check-status` | Passed |
