@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string] $DisplayName = "Azure Support Slack Bot - $env:AZURE_ENV_NAME",
+    [string] $DisplayName = "Azure Service Health Slack - $env:AZURE_ENV_NAME",
     [string] $AznsApplicationId = "461e8683-5575-4561-ac7f-899cc907d62a",
     [string] $RoleName = "ActionGroupsSecureWebhook"
 )
@@ -57,6 +57,17 @@ if ($LASTEXITCODE -ne 0 -or -not $account) {
 }
 
 $tenantId = $account.tenantId
+if ($env:AZURE_SUBSCRIPTION_ID) {
+    # Microsoft Graph calls run in the Azure CLI tenant; it must be the tenant
+    # that owns the subscription azd deploys to.
+    $target = az account show --subscription $env:AZURE_SUBSCRIPTION_ID --output json --only-show-errors | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or -not $target) {
+        throw "Azure CLI cannot access subscription $($env:AZURE_SUBSCRIPTION_ID). Run 'az login --tenant <tenant-id>' with the same account used by azd."
+    }
+    if ($target.tenantId -ne $tenantId) {
+        throw "Azure CLI is signed in to tenant $tenantId but subscription $($env:AZURE_SUBSCRIPTION_ID) belongs to tenant $($target.tenantId). Run 'az login --tenant $($target.tenantId)' and retry."
+    }
+}
 $application = $null
 if ($env:SERVICE_HEALTH_API_OBJECT_ID) {
     # Prefer the app recorded in the azd environment over a display-name match.

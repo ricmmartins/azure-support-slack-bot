@@ -72,6 +72,10 @@ class SlackIncidentNotifier:
             return response["ts"]
         except (SlackApiError, SlackRequestError) as exc:
             self._raise_classified(exc)
+        except OSError as exc:
+            # slack_sdk re-raises urllib network errors (DNS, TLS, timeouts).
+            raise TransientSlackError(
+                "Slack request failed with a network error") from exc
 
     def update(self, event, channel_id, message_ts, lifecycle_status):
         text, blocks = render_incident_message(event, lifecycle_status)
@@ -92,6 +96,9 @@ class SlackIncidentNotifier:
             )
         except SlackRequestError as exc:
             self._raise_classified(exc)
+        except OSError as exc:
+            raise TransientSlackError(
+                "Slack request failed with a network error") from exc
         return self.create(event, channel_id, lifecycle_status)
 
     @staticmethod

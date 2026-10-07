@@ -1,6 +1,6 @@
-name: azure-support-slack-bot
+name: azure-service-health-slack
 metadata:
-  template: azure-support-slack-bot@0.0.1
+  template: azure-service-health-slack@0.0.1
 services:
   app:
     project: .
@@ -9,6 +9,8 @@ services:
     docker:
       path: ./Dockerfile
       context: .
+      # Build in Azure Container Registry so a local Docker install is optional.
+      remoteBuild: true
 hooks:
   preprovision:
     windows:

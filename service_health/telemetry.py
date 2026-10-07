@@ -27,7 +27,7 @@ def configure_telemetry(environ=None):
 
 class ServiceHealthMetrics:
     def __init__(self):
-        meter = metrics.get_meter("azure-support-slack-bot.service-health")
+        meter = metrics.get_meter("azure-service-health-slack")
         self.requests = meter.create_counter(
             "service_health.requests",
             description="Service Health events by processing result",

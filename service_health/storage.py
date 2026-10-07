@@ -70,24 +70,33 @@ def _etag(entity):
     return entity.get("etag") or entity.get("odata.etag") or ""
 
 
+# Azure Table string properties are limited to 64 KiB (32K UTF-16 chars).
+# Stored text is informational only, so long values are clipped.
+_MAX_STORED_TEXT = 16_000
+
+
+def _bounded(value, limit=_MAX_STORED_TEXT):
+    return value if len(value) <= limit else value[:limit]
+
+
 def _event_properties(event):
     return {
-        "trackingId": event.tracking_id,
+        "trackingId": _bounded(event.tracking_id, 256),
         "pendingFingerprint": event.fingerprint,
         "pendingSubmissionTime": event.submission_time,
         "pendingLifecycleStatus": event.lifecycle_status.value,
         "level": event.level.value,
-        "title": event.title,
+        "title": _bounded(event.title, 1024),
         "impactStartTime": event.impact_start_time,
-        "communication": event.communication,
-        "impactedServicesJson": json.dumps(
+        "communication": _bounded(event.communication),
+        "impactedServicesJson": _bounded(json.dumps(
             [item.as_dict() for item in event.impacted_services],
             ensure_ascii=True,
             separators=(",", ":"),
-        ),
-        "incidentType": event.incident_type,
-        "communicationId": event.communication_id,
-        "eventDataId": event.event_data_id,
+        )),
+        "incidentType": _bounded(event.incident_type, 256),
+        "communicationId": _bounded(event.communication_id, 256),
+        "eventDataId": _bounded(event.event_data_id, 256),
     }
 
 
@@ -125,10 +134,10 @@ class AzureTableIncidentStore:
             raise TransientStoreError(
                 "Unable to reserve incident state") from exc
         except HttpResponseError as exc:
-            if exc.status_code in {408, 429, 500, 502, 503, 504}:
-                raise TransientStoreError(
-                    "Unable to reserve incident state") from exc
-            raise
+            # Includes 403 while RBAC propagates, managed identity token
+            # failures and a missing table. Retrying is the only safe option.
+            raise TransientStoreError(
+                "Unable to reserve incident state") from exc
 
     def _begin_existing(self, event, now):
         for _ in range(3):
@@ -221,10 +230,8 @@ class AzureTableIncidentStore:
             raise TransientStoreError(
                 "Unable to read incident state") from exc
         except HttpResponseError as exc:
-            if exc.status_code in {408, 429, 500, 502, 503, 504}:
-                raise TransientStoreError(
-                    "Unable to read incident state") from exc
-            raise
+            raise TransientStoreError(
+                "Unable to read incident state") from exc
 
     def _replace(self, entity, etag):
         if not etag:

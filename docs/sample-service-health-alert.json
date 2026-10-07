@@ -1,0 +1,43 @@
+{
+  "schemaId": "azureMonitorCommonAlertSchema",
+  "data": {
+    "essentials": {
+      "alertId": "/subscriptions/00000000-0000-0000-0000-000000000000/providers/Microsoft.AlertsManagement/alerts/00000000-0000-0000-0000-000000000001",
+      "alertRule": "sample-service-health-alert",
+      "severity": "Sev4",
+      "signalType": "ActivityLog",
+      "monitorCondition": "Fired",
+      "monitoringService": "ServiceHealth",
+      "alertTargetIDs": [
+        "/subscriptions/00000000-0000-0000-0000-000000000000"
+      ],
+      "firedDateTime": "2025-06-01T12:00:05Z",
+      "essentialsVersion": "1.0",
+      "alertContextVersion": "1.0"
+    },
+    "alertContext": {
+      "channels": 1,
+      "eventSource": 2,
+      "eventTimestamp": "2025-06-01T12:00:00Z",
+      "eventDataId": "11111111-1111-1111-1111-111111111111",
+      "level": 3,
+      "operationName": "Microsoft.ServiceHealth/incident/action",
+      "properties": {
+        "title": "SAMPLE - Azure Kubernetes Service degradation in East US",
+        "service": "Azure Kubernetes Service",
+        "region": "East US",
+        "communication": "<p>This is a <strong>sample</strong> Service Health event sent by hand to test the Slack integration.</p>",
+        "incidentType": "Incident",
+        "trackingId": "SAMPLE-0001",
+        "impactStartTime": "2025-06-01T11:45:00Z",
+        "impactedServices": "[{\"ImpactedRegions\":[{\"RegionName\":\"East US\"}],\"ServiceName\":\"Azure Kubernetes Service\"}]",
+        "stage": "Active",
+        "communicationId": "sample-communication-1",
+        "isHIR": "false",
+        "version": "0.1.1"
+      },
+      "status": "Active",
+      "submissionTimestamp": "2025-06-01T12:00:00Z"
+    }
+  }
+}

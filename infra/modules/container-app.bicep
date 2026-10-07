@@ -170,7 +170,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             }
             {
               name: 'OTEL_SERVICE_NAME'
-              value: 'azure-support-slack-bot'
+              value: 'azure-service-health-slack'
             }
           ]
           // The placeholder image does not serve /healthz or /readyz on port 5000.

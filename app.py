@@ -24,7 +24,8 @@ logging.getLogger("azure").setLevel(logging.WARNING)
 
 configure_telemetry()
 
-slack_client = WebClient(os.environ["SLACK_BOT_TOKEN"])
+# Action Group webhooks time out quickly; fail fast and let it retry.
+slack_client = WebClient(os.environ["SLACK_BOT_TOKEN"], timeout=10)
 web_app = Flask(__name__)
 
 _service_health_runtime = None

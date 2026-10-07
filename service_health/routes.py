@@ -91,6 +91,10 @@ def create_service_health_blueprint(get_runtime):
                 response_headers,
             )
         except MissingWebhookIdentity:
+            logger.info(
+                "Rejected Service Health webhook without an Entra identity",
+                extra={"correlation_id": correlation_id},
+            )
             return (
                 jsonify({
                     "error": "authentication_required",
@@ -99,7 +103,11 @@ def create_service_health_blueprint(get_runtime):
                 401,
                 response_headers,
             )
-        except InvalidWebhookIdentity:
+        except InvalidWebhookIdentity as exc:
+            logger.warning(
+                "Rejected Service Health webhook identity: %s", exc,
+                extra={"correlation_id": correlation_id},
+            )
             return (
                 jsonify({
                     "error": "forbidden",
@@ -143,6 +151,21 @@ def create_service_health_blueprint(get_runtime):
                 InvalidServiceHealthConfiguration):
             logger.exception(
                 "Transient Service Health processing failure",
+                extra={"correlation_id": correlation_id},
+            )
+            return (
+                jsonify({
+                    "error": "service_unavailable",
+                    "correlationId": correlation_id,
+                }),
+                503,
+                response_headers,
+            )
+        except Exception:
+            # Unknown failures return 503 so the Action Group retries instead
+            # of silently dropping the notification on a bare 500.
+            logger.exception(
+                "Unexpected Service Health processing failure",
                 extra={"correlation_id": correlation_id},
             )
             return (

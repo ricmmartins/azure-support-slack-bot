@@ -20,7 +20,7 @@ var resourceToken = toLower(uniqueString(subscription().id, environmentName))
 var resourceGroupName = 'rg-${environmentName}'
 var tags = {
   'azd-env-name': environmentName
-  workload: 'azure-support-slack-bot'
+  workload: 'azure-service-health-slack'
 }
 
 resource resourceGroup 'Microsoft.Resources/resourceGroups@2024-03-01' = {
@@ -115,4 +115,7 @@ output AZURE_LOCATION string = location
 output AZURE_RESOURCE_GROUP string = resourceGroupName
 output SERVICE_APP_NAME string = app.outputs.name
 output SERVICE_APP_URI string = 'https://${app.outputs.fqdn}'
+output SERVICE_HEALTH_WEBHOOK_URI string = 'https://${app.outputs.fqdn}/api/service-health'
+output AZURE_STORAGE_ACCOUNT_NAME string = storage.outputs.name
+output AZURE_TABLE_ENDPOINT string = storage.outputs.tableEndpoint
 output AZURE_CONTAINER_REGISTRY_ENDPOINT string = registry.outputs.loginServer
