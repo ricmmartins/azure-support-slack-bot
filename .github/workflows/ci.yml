@@ -40,10 +40,14 @@ jobs:
       - name: PowerShell syntax
         shell: pwsh
         run: |
-          $errors = $null
-          [void][System.Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path scripts/configure-secure-webhook.ps1), [ref]$null, [ref]$errors)
-          if ($errors) { $errors | Format-List; exit 1 }
+          $failed = $false
+          foreach ($script in Get-ChildItem scripts -Filter *.ps1) {
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $script.FullName, [ref]$null, [ref]$errors)
+            if ($errors) { $errors | Format-List; $failed = $true }
+          }
+          if ($failed) { exit 1 }
 
   container:
     runs-on: ubuntu-latest

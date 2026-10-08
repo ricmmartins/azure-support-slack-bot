@@ -235,17 +235,18 @@ You do **not** set these yourself. The pre-provision hook writes them:
 | `SERVICE_HEALTH_API_IDENTIFIER_URI` | hook | `api://<client-id>` |
 | `SERVICE_APP_IMAGE_NAME` | `azd deploy` | Image currently running, so re-provisioning keeps it |
 
-### 4.4 Provision, deploy, provision
+### 4.4 Provision and deploy
 
 ```sh
 azd provision
 azd deploy
-azd provision
 ```
+
+(`azd up` runs both steps in one command.)
 
 What each step does:
 
-1. **`azd provision`** (first time) runs
+1. **`azd provision`** runs
    [`scripts/configure-secure-webhook.ps1`](scripts/configure-secure-webhook.ps1)
    as a pre-provision hook. The script creates or reuses the Entra app
    registration, adds the `ActionGroupsSecureWebhook` app role, and grants
@@ -256,16 +257,25 @@ What each step does:
    probes**, because your image does not exist yet.
 2. **`azd deploy`** builds the image in Azure Container Registry, rolls it out
    to the Container App, and records the image name in `SERVICE_APP_IMAGE_NAME`.
-3. **`azd provision`** (second time) re-applies the infrastructure with the
-   real image and turns on the `/healthz` and `/readyz` probes. Without this
-   step the app runs without probes.
+   On the first deploy, the post-deploy hook
+   [`scripts/ensure-app-probes.ps1`](scripts/ensure-app-probes.ps1) sees that
+   the app has no probes and runs `azd provision` once more by itself. That
+   re-applies the infrastructure with the real image and turns on the
+   `/healthz` and `/readyz` probes. On later deploys the probes already exist
+   and the hook does nothing.
 
-You only need the double provision when you create an environment. Later,
-use `azd deploy` for code changes and `azd provision` for configuration
-changes (for example new routing JSON or a new Slack token). The hook runs on
-every provision and does nothing if everything already exists.
+Why the extra provision? `azd deploy` only swaps the container image; it
+does not re-apply Bicep. The probes live in the Bicep template and cannot be
+enabled while the placeholder image (which has no `/healthz`) is running, so
+they are switched on by a provision that runs after the first deploy. The hook
+automates that, so you never have to do it by hand.
 
-The first provision usually takes 5–10 minutes.
+Later, use `azd deploy` for code changes and `azd provision` for configuration
+changes (for example new routing JSON or a new Slack token). The pre-provision
+hook runs on every provision and does nothing if everything already exists.
+
+The first provision usually takes 5–10 minutes, and the first deploy takes a
+few minutes longer than later ones because of the automatic provision.
 
 ## 5. Validate the deployment
 

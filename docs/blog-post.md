@@ -272,15 +272,14 @@ $routes = Get-Content routes.json -Raw | ConvertFrom-Json | ConvertTo-Json -Dept
 azd env set SERVICE_HEALTH_ROUTES_JSON $routes
 ```
 
-Provision, deploy, and provision again:
+Provision and deploy (or run `azd up`, which does both):
 
 ```bash
 azd provision
 azd deploy
-azd provision
 ```
 
-- The **first provision** runs the hook that creates the Entra app
+- **`azd provision`** runs the hook that creates the Entra app
   registration and app role and grants the role to Azure Monitor. It stores
   `AZURE_TENANT_ID`, `SERVICE_HEALTH_API_CLIENT_ID`,
   `SERVICE_HEALTH_API_OBJECT_ID` and `SERVICE_HEALTH_API_IDENTIFIER_URI` in the
@@ -288,8 +287,10 @@ azd provision
   with a placeholder image and no health probes, because your image does not
   exist yet.
 - **`azd deploy`** builds the image in Container Registry and rolls it out.
-- The **second provision** applies the real image to the template and turns
-  on the `/healthz` and `/readyz` probes.
+  `azd deploy` only swaps the image and does not re-apply Bicep, so on the
+  first deploy a post-deploy hook notices the missing probes and runs
+  `azd provision` once more. That puts the real image in the template and
+  turns on the `/healthz` and `/readyz` probes. Later deploys skip it.
 
 After that, use `azd deploy` for code changes and `azd provision` for
 configuration changes.

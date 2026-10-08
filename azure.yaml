@@ -19,3 +19,11 @@ hooks:
     posix:
       shell: pwsh
       run: ./scripts/configure-secure-webhook.ps1
+  # Enables the health probes after the first deploy (no-op afterwards).
+  postdeploy:
+    windows:
+      shell: pwsh
+      run: ./scripts/ensure-app-probes.ps1
+    posix:
+      shell: pwsh
+      run: ./scripts/ensure-app-probes.ps1
