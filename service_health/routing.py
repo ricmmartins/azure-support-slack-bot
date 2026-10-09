@@ -35,10 +35,12 @@ class RoutingRule:
         return (
             (not self.subscriptions
              or event.subscription_id.casefold() in self.subscriptions)
-            and (not self.services
-                 or bool(event.service_names & self.services))
-            and (not self.regions
-                 or bool(event.region_names & self.regions))
+            and any(
+                (not self.services or item.name.casefold() in self.services)
+                and (not self.regions or any(
+                    region.casefold() in self.regions for region in item.regions))
+                for item in event.impacted_services
+            )
         )
 
 

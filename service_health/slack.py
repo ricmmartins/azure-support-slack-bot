@@ -155,9 +155,10 @@ def render_incident_message(event: ServiceHealthEvent, lifecycle_status):
                 },
                 {
                     "type": "mrkdwn",
-                    "text": (
+                    "text": _truncate(
                         f"*Incident type*\n"
-                        f"{_escape_mrkdwn(event.incident_type or 'Service issue')}"
+                        f"{_escape_mrkdwn(event.incident_type or 'Service issue')}",
+                        2000,
                     ),
                 },
                 {
@@ -169,9 +170,10 @@ def render_incident_message(event: ServiceHealthEvent, lifecycle_status):
                 },
                 {
                     "type": "mrkdwn",
-                    "text": (
+                    "text": _truncate(
                         f"*Subscription*\n"
-                        f"`{_escape_mrkdwn(event.subscription_id)}`"
+                        f"`{_escape_mrkdwn(event.subscription_id)}`",
+                        2000,
                     ),
                 },
             ],
@@ -195,11 +197,12 @@ def render_incident_message(event: ServiceHealthEvent, lifecycle_status):
             "elements": [
                 {
                     "type": "mrkdwn",
-                    "text": (
+                    "text": _truncate(
                         f"Tracking ID: `{_escape_mrkdwn(event.tracking_id)}` · "
                         f"Updated "
                         f"{event.submission_time.strftime('%Y-%m-%d %H:%M UTC')} · "
-                        f"<{portal_url}|Open Azure Service Health>"
+                        f"<{portal_url}|Open Azure Service Health>",
+                        3000,
                     ),
                 }
             ],

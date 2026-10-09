@@ -36,6 +36,7 @@ def create_service_health_blueprint(get_runtime):
         try:
             get_runtime()
         except InvalidServiceHealthConfiguration:
+            logger.exception("Invalid Service Health runtime configuration")
             return jsonify({"status": "not_ready"}), 503
         except Exception:
             logger.exception("Service Health runtime initialization failed")

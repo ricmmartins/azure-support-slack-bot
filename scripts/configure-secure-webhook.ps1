@@ -71,12 +71,10 @@ if ($env:AZURE_SUBSCRIPTION_ID) {
 $application = $null
 if ($env:SERVICE_HEALTH_API_OBJECT_ID) {
     # Prefer the app recorded in the azd environment over a display-name match.
-    try {
-        $application = Invoke-Graph -Method GET -MaxAttempts 1 `
-            -Uri "https://graph.microsoft.com/v1.0/applications/$($env:SERVICE_HEALTH_API_OBJECT_ID)"
-    } catch {
-        $application = $null
-    }
+    $application = Invoke-Graph -Method GET -MaxAttempts 1 `
+        -Uri "https://graph.microsoft.com/v1.0/applications/$($env:SERVICE_HEALTH_API_OBJECT_ID)"
+    # An inaccessible recorded app must not silently select/create another one.
+    # If it was deleted, explicitly clear the stored IDs before reprovisioning.
 }
 if (-not $application) {
     $escapedName = $DisplayName.Replace("'", "''")
@@ -86,6 +84,10 @@ if (-not $application) {
         throw "More than one application is named '$DisplayName'. Set SERVICE_HEALTH_API_OBJECT_ID with 'azd env set' to choose one."
     }
     $application = $apps.value | Select-Object -First 1
+}
+
+if ($env:SERVICE_HEALTH_API_CLIENT_ID -and $env:SERVICE_HEALTH_API_CLIENT_ID -ne $application.appId) {
+    throw "SERVICE_HEALTH_API_CLIENT_ID does not match the selected app registration. Correct the stored IDs before provisioning."
 }
 
 if (-not $application) {
@@ -112,6 +114,10 @@ $role = $application.appRoles |
     Where-Object { $_.value -eq $RoleName } |
     Select-Object -First 1
 
+if ($role -and (-not $role.isEnabled -or $role.allowedMemberTypes -notcontains "Application")) {
+    throw "App role '$RoleName' must be enabled and allow Application members. Ask the Entra admin to repair the role."
+}
+
 if (-not $role) {
     $role = @{
         id = [guid]::NewGuid().ToString()
@@ -123,12 +129,14 @@ if (-not $role) {
     }
     $appRoles = @($application.appRoles) + $role
     $patch = @{
-        identifierUris = @($identifierUri)
+        identifierUris = @(@($application.identifierUris) + $identifierUri | Select-Object -Unique)
         appRoles = $appRoles
     } | ConvertTo-Json -Depth 10
     Invoke-Graph -Method PATCH -Uri "https://graph.microsoft.com/v1.0/applications/$($application.id)" -Body $patch | Out-Null
 } elseif ($application.identifierUris -notcontains $identifierUri) {
-    $patch = @{ identifierUris = @($identifierUri) } | ConvertTo-Json
+    $patch = @{
+        identifierUris = @(@($application.identifierUris) + $identifierUri | Select-Object -Unique)
+    } | ConvertTo-Json
     Invoke-Graph -Method PATCH -Uri "https://graph.microsoft.com/v1.0/applications/$($application.id)" -Body $patch | Out-Null
 }
 
@@ -146,10 +154,15 @@ if (-not $aznsPrincipal) {
     $aznsPrincipal = Invoke-Graph -Method POST -Uri "https://graph.microsoft.com/v1.0/servicePrincipals" -Body $body
 }
 
-$assignments = Invoke-Graph -Method GET -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$($aznsPrincipal.id)/appRoleAssignments"
-$assignment = $assignments.value | Where-Object {
-    $_.resourceId -eq $apiServicePrincipal.id -and $_.appRoleId -eq $role.id
-}
+$assignment = $null
+$assignmentUri = "https://graph.microsoft.com/v1.0/servicePrincipals/$($aznsPrincipal.id)/appRoleAssignments"
+do {
+    $assignments = Invoke-Graph -Method GET -Uri $assignmentUri
+    $assignment = $assignments.value | Where-Object {
+        $_.resourceId -eq $apiServicePrincipal.id -and $_.appRoleId -eq $role.id
+    }
+    $assignmentUri = $assignments.'@odata.nextLink'
+} while (-not $assignment -and $assignmentUri)
 if (-not $assignment) {
     $body = @{
         principalId = $aznsPrincipal.id

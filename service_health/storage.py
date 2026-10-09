@@ -1,4 +1,5 @@
 import json
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -115,6 +116,7 @@ class AzureTableIncidentStore:
             "messageTs": "",
             "processingState": "processing",
             "leaseUntil": now + timedelta(seconds=self.lease_seconds),
+            "leaseOwner": str(uuid.uuid4()),
             "attemptCount": 1,
             "createdAt": now,
             "updatedAt": now,
@@ -126,8 +128,7 @@ class AzureTableIncidentStore:
         try:
             self.table_client.create_entity(entity)
             created = self._get(event)
-            return IncidentWorkItem(
-                StoreDecision.CREATE, created, _etag(created))
+            return self._owned_work_item(StoreDecision.CREATE, created, entity)
         except ResourceExistsError:
             return self._begin_existing(event, now)
         except (ServiceRequestError, ServiceResponseError) as exc:
@@ -164,9 +165,11 @@ class AzureTableIncidentStore:
                 return IncidentWorkItem(
                     StoreDecision.BUSY, current, _etag(current))
 
+            lease_owner = str(uuid.uuid4())
             current.update({
                 "processingState": "processing",
                 "leaseUntil": now + timedelta(seconds=self.lease_seconds),
+                "leaseOwner": lease_owner,
                 "attemptCount": int(current.get("attemptCount", 0)) + 1,
                 "updatedAt": now,
                 "lastErrorCode": "",
@@ -180,12 +183,22 @@ class AzureTableIncidentStore:
                     if acquired.get("messageTs")
                     else StoreDecision.CREATE
                 )
-                return IncidentWorkItem(
-                    decision, acquired, _etag(acquired))
+                return self._owned_work_item(decision, acquired, current)
             except ResourceModifiedError:
                 continue
         raise TransientStoreError(
             "Incident state changed too often to acquire a lease")
+
+    def _owned_work_item(self, decision, acquired, reserved):
+        # A slow write/read can outlive the lease and observe a different owner.
+        lease_until = _parse_datetime(acquired.get("leaseUntil"))
+        if (
+            acquired.get("leaseOwner") != reserved["leaseOwner"]
+            or not lease_until
+            or lease_until <= self.now()
+        ):
+            raise TransientStoreError("Incident lease expired or changed owner")
+        return IncidentWorkItem(decision, acquired, _etag(acquired))
 
     def finalize(
             self, work_item, message_ts, lifecycle_status: LifecycleStatus):

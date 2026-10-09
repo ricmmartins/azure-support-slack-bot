@@ -48,6 +48,9 @@ jobs:
             if ($errors) { $errors | Format-List; $failed = $true }
           }
           if ($failed) { exit 1 }
+      - name: Hook regression tests (mocked Azure and Graph)
+        shell: pwsh
+        run: ./test/test-hooks.ps1
 
   container:
     runs-on: ubuntu-latest
