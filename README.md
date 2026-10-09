@@ -4,7 +4,7 @@
 
 This service posts [Azure Service Health](https://learn.microsoft.com/azure/service-health/overview)
 events to Slack: service issues, planned maintenance, health advisories and
-security advisories. Each incident gets **one** Slack message, and that
+security advisories. Normally each incident gets **one** Slack message, and that
 message is edited in place as the incident moves from Active to Updated to
 Resolved, so the team's discussion stays in one thread.
 
@@ -56,7 +56,7 @@ Commands are shown for **bash** (macOS, Linux, WSL) and **PowerShell 7**
 | Git | Clone this repository | [git-scm.com](https://git-scm.com/downloads) |
 | Azure CLI (`az`) | Microsoft Graph calls and checks | [Install the Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) |
 | Azure Developer CLI (`azd`) | Provisions and deploys everything | [Install azd](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd) |
-| PowerShell 7 (`pwsh`) | Runs the pre-provision hook on **every** OS, including macOS and Linux | [Install PowerShell](https://learn.microsoft.com/powershell/scripting/install/installing-powershell) |
+| PowerShell 7 (`pwsh`) | Runs both hooks on **every** OS, including macOS and Linux | [Install PowerShell](https://learn.microsoft.com/powershell/scripting/install/installing-powershell) |
 | Python 3.11+ | Optional. Only for local development and tests | [python.org](https://www.python.org/downloads/) |
 | Docker | Optional. The image is built in Azure Container Registry | [Get Docker](https://docs.docker.com/get-docker/) |
 
@@ -84,9 +84,12 @@ that single step for you.
 ### Clone the repository
 
 ```sh
-git clone https://github.com/ricmmartins/azure-support-slack-bot.git
+git clone --branch ricmmartins-service-health-mvp https://github.com/ricmmartins/azure-support-slack-bot.git
 cd azure-support-slack-bot
 ```
+
+This tutorial currently targets the Service Health branch, not the legacy
+default branch. After it is merged, cloning `main` will use the same code.
 
 ## 2. Create the Slack app
 
@@ -149,6 +152,8 @@ How rules work:
 - A rule can filter on `subscription_ids`, `services` and `regions`. Every
   filter you include must match; filters you leave out match anything.
   Matching is case-insensitive.
+- When both `services` and `regions` are present, the region must belong to
+  the matching service in the event, not to some other impacted service.
 - Service and region names must match what Service Health publishes, for
   example `East US`, not `eastus`. Copy them from **Service Health** in the
   Azure portal.
@@ -182,7 +187,8 @@ If your account has access to several tenants, pass the tenant explicitly:
 
 Pick a short environment name (it becomes part of resource names, for
 example `rg-shh-prod`), the subscription ID and a region that supports
-Azure Container Apps.
+Azure Container Apps. Use lowercase letters, numbers and hyphens, starting
+with a letter; keep the name at most 20 characters.
 
 bash:
 
@@ -190,6 +196,7 @@ bash:
 azd env new shh-prod \
   --subscription "<subscription-id>" \
   --location eastus2
+az account set --subscription "<subscription-id>"
 ```
 
 PowerShell:
@@ -198,6 +205,7 @@ PowerShell:
 azd env new shh-prod `
   --subscription "<subscription-id>" `
   --location eastus2
+az account set --subscription "<subscription-id>"
 ```
 
 ### 4.3 Set the two required values
@@ -223,7 +231,10 @@ azd env set SERVICE_HEALTH_ROUTES_JSON $routes
 ```
 
 azd stores these values in `.azure/<env>/.env` on your machine. That folder
-is git-ignored; do not commit it.
+is git-ignored; do not commit it. The token is also visible in the example
+command and may enter shell history. Use a private terminal, never paste
+real tokens into screenshots or shared logs, and follow your organization's
+secret-handling policy.
 
 You do **not** set these yourself. The pre-provision hook writes them:
 
@@ -259,16 +270,29 @@ What each step does:
    to the Container App, and records the image name in `SERVICE_APP_IMAGE_NAME`.
    On the first deploy, the post-deploy hook
    [`scripts/ensure-app-probes.ps1`](scripts/ensure-app-probes.ps1) sees that
-   the app has no probes and runs `azd provision` once more by itself. That
+   the app lacks the required probes and runs `azd provision` once more by itself. That
    re-applies the infrastructure with the real image and turns on the
-   `/healthz` and `/readyz` probes. On later deploys the probes already exist
-   and the hook does nothing.
+   `/healthz` and `/readyz` HTTP probes on port 5000. It then verifies both
+   probes and the deployed image. On later deploys, if both probes already
+   match, the hook does nothing. Missing or incorrect probes are repaired.
 
 Why the extra provision? `azd deploy` only swaps the container image; it
 does not re-apply Bicep. The probes live in the Bicep template and cannot be
 enabled while the placeholder image (which has no `/healthz`) is running, so
 they are switched on by a provision that runs after the first deploy. The hook
-automates that, so you never have to do it by hand.
+automates that in the normal path. It pins the azd environment and image
+explicitly so a nested process cannot provision a different environment or
+revert to the placeholder.
+
+The automatic provision also runs `preprovision` again, reads Graph, and
+reapplies all infrastructure, not just probes. It can repair missing Entra
+configuration if your account has the required rights. Do not run deployments
+concurrently against the same environment. A failed hook makes `azd deploy`
+fail even if the image has rolled out; see troubleshooting below.
+Both `azd deploy` and `azd up` invoke the
+[postdeploy command hook](https://learn.microsoft.com/azure/developer/azure-developer-cli/azd-extensibility).
+Hook behavior is covered by mocked regression tests; a first-time Azure
+deployment and signed Action Group test are still required before production.
 
 Later, use `azd deploy` for code changes and `azd provision` for configuration
 changes (for example new routing JSON or a new Slack token). The pre-provision
@@ -316,7 +340,19 @@ Invoke-RestMethod "$APP_URI/readyz"
 ```
 
 `/readyz` returns 503 when the configuration is invalid, for example broken
-routing JSON. Check the logs (5.4) if that happens.
+routing JSON. It checks runtime initialization, not connectivity to Slack or
+Storage; the signed Action Group test below checks delivery. Check the logs
+(5.4) if readiness fails.
+
+Confirm the template has **both** application probes (same command in bash
+and PowerShell):
+
+```sh
+az containerapp show --name "$APP_NAME" --resource-group "$RG" --query "properties.template.containers[?name=='app'].probes" -o json
+```
+
+Expect `Liveness` → `/healthz` and `Readiness` → `/readyz`, both HTTP on port
+5000. Seeing only a TCP/startup probe is not sufficient.
 
 ### 5.2 Confirm the webhook rejects anonymous callers
 
@@ -380,8 +416,9 @@ az monitor action-group test-notifications create `
 ```
 
 The test payload always uses the same tracking ID. If you run the test twice,
-the second run returns `duplicate` and posts nothing new. That is the
-deduplication working, not an error.
+an identical payload returns `duplicate` and posts nothing new. A newer
+timestamp can update the existing message; an older one is `stale`. All three
+are successful delivery outcomes.
 
 Right after the first deployment, role assignments can take a few minutes to
 propagate. During that window the service returns 503 and Azure Monitor
@@ -397,7 +434,8 @@ az containerapp logs show --name "$APP_NAME" --resource-group "$RG" --follow --t
 
 In PowerShell, use `$APP_NAME` and `$RG` the same way.
 
-For history, open the Log Analytics workspace `log-<env>` in the portal →
+Open Application Insights `appi-<env>` for requests, failures and dependencies.
+For history, open the linked Log Analytics workspace `log-<env>` in the portal →
 **Logs**, and run:
 
 ```kusto
@@ -507,16 +545,24 @@ The app accepts `api://<client-id>` and `<client-id>`. If someone deleted or
 recreated the app registration, the azd environment still holds the old IDs.
 Compare:
 
-```sh
+```bash
 azd env get-value SERVICE_HEALTH_API_CLIENT_ID
 az containerapp show --name "$APP_NAME" --resource-group "$RG" \
+  --query "properties.template.containers[0].env[?name=='SERVICE_HEALTH_EXPECTED_AUDIENCE'].value" -o tsv
+```
+
+PowerShell:
+
+```powershell
+azd env get-value SERVICE_HEALTH_API_CLIENT_ID
+az containerapp show --name $APP_NAME --resource-group $RG `
   --query "properties.template.containers[0].env[?name=='SERVICE_HEALTH_EXPECTED_AUDIENCE'].value" -o tsv
 ```
 
 To start over with a fresh app registration, clear the stored IDs and
 provision again:
 
-```sh
+```bash
 azd env set SERVICE_HEALTH_API_OBJECT_ID ""
 azd env set SERVICE_HEALTH_API_CLIENT_ID ""
 azd provision
@@ -536,8 +582,22 @@ azd hooks run preprovision
 azd env get-values | grep -E "AZURE_TENANT_ID|SERVICE_HEALTH_API_"
 ```
 
+PowerShell (admin):
+
+```powershell
+azd env new shh-prod --subscription "<subscription-id>" --location eastus2
+azd hooks run preprovision
+foreach ($name in @("AZURE_TENANT_ID", "SERVICE_HEALTH_API_CLIENT_ID",
+                   "SERVICE_HEALTH_API_OBJECT_ID", "SERVICE_HEALTH_API_IDENTIFIER_URI")) {
+  "$name=$(azd env get-value $name)"
+}
+```
+
 The admin sends you the four values; you set them with `azd env set` and run
-`azd provision`. With those IDs in place, the hook only reads from Graph.
+`azd provision`. With a correctly configured app and role assignment, the hook
+only reads from Graph. Missing assignments or configuration still require
+admin rights to repair. A stored app ID that cannot be read now fails explicitly;
+it never silently creates a replacement.
 
 If the hook says the Azure CLI is signed in to a different tenant than the
 subscription, run `az login --tenant <tenant-id>` and try again.
@@ -557,6 +617,22 @@ The configuration is invalid. The logs show the reason, usually a routing
 JSON error such as a missing `default_channel_id` or a non-integer
 `priority`. Fix `routes.json`, run `azd env set SERVICE_HEALTH_ROUTES_JSON
 ...` again, then `azd provision`.
+
+### Postdeploy fails or the probes are missing
+
+The image may already be deployed even though `azd deploy` reports failure.
+Check the error for Azure CLI login, subscription access, Graph permission,
+or provision failure. If the app is still on the placeholder, rerun `azd deploy`.
+After fixing permissions/configuration, rerun only the hook:
+
+```sh
+azd hooks run postdeploy
+```
+
+This can provision resources and rerun the Entra setup hook; it is not a
+read-only health check. As a recovery alternative, run `azd provision` directly,
+then use the probe query in section 5.1. Bicep remains the source of truth:
+avoid manually patching probes in the portal.
 
 ### The test succeeds but nothing appears in Slack
 
@@ -579,7 +655,7 @@ region; check the [pricing calculator](https://azure.microsoft.com/pricing/calcu
 | Storage, Key Vault, Action Group, Activity Log Alert | Cents |
 | **Total** | **≈ US$20–45 per month** |
 
-One replica always runs so Azure Monitor never waits for a cold start. You
+One replica stays allocated to reduce cold-start delays. You
 can set `minReplicas` to 0 in `infra/modules/container-app.bicep` to save
 money, at the cost of slower first responses.
 
@@ -590,7 +666,8 @@ azd down --purge
 ```
 
 `azd down` deletes the resource group. Some things are left behind and need
-separate cleanup:
+separate cleanup. `--purge` cannot override Key Vault purge protection and may
+report a purge failure after other resources have been deleted:
 
 - **Key Vault** stays soft-deleted for 90 days because purge protection is
   on. It costs nothing, but it still holds the Slack token, so also do the
@@ -614,22 +691,32 @@ separate cleanup:
   Container Registry also allow public network access, with RBAC-only data
   access and shared keys disabled on Storage. Add private endpoints and a
   VNet-integrated environment if your policies require it.
-- **At-least-once delivery.** If the container crashes after Slack accepts
+- **Best-effort delivery with retries, not exactly-once.** If the container crashes after Slack accepts
   the first message but before its timestamp is saved, a retry can post a
-  second message. Removing that window needs a transactional outbox, which is
-  out of scope.
+  second message. A request that outlives its lease can also overlap another
+  request. An outbox helps recovery but cannot make a Slack call and a Table
+  write atomic; stricter guarantees need downstream reconciliation.
+  Azure Monitor has a finite retry policy and may suppress the endpoint for
+  15 minutes after retries fail. There is no durable queue or dead-letter
+  replay, so this service must not be your only critical paging path.
 - **Permanent Slack errors are not retried.** An event that fails with
   `not_in_channel` is not reposted; the next update creates the message.
 - **Token rotation needs a provision.** After rotating the Slack token, run
   `azd env set SLACK_BOT_TOKEN ...` and `azd provision`.
 - **Local development needs a real Storage account.** There is no Azurite
   mode.
+- **Single-region hosting and LRS state.** Place the service outside the
+  primary workload region where possible. Define fallback notifications,
+  retention and data-export policy for incident details sent to Slack.
+- **First deployment still needs acceptance testing.** Local tests and CI
+  do not prove Easy Auth/Graph/RBAC propagation or nested `azd` behavior on
+  your tenant. Run section 5 before relying on the service.
 
 ## How it works
 
 1. Each subscription has an Activity Log Alert with `category ==
    ServiceHealth`. It calls an Action Group with a
-   [Secure Webhook](https://learn.microsoft.com/azure/azure-monitor/alerts/action-groups#secure-webhook)
+   [Secure Webhook](https://learn.microsoft.com/azure/azure-monitor/alerts/action-groups#configure-authentication-for-secure-webhook)
    using the [Common Alert Schema](https://learn.microsoft.com/azure/azure-monitor/alerts/alerts-common-schema).
 2. [Container Apps authentication](https://learn.microsoft.com/azure/container-apps/authentication)
    validates the Entra token. The app then checks that the caller is Azure
@@ -639,7 +726,9 @@ separate cleanup:
 3. The incident key is the subscription ID plus a hash of the Service Health
    tracking ID. A Table Storage entity holds the Slack channel, the message
    timestamp, the last processed update and a 30-second lease. Every write
-   uses an ETag, so two replicas cannot claim the same incident.
+   uses an ETag; an owner token is checked after acquisition so a slow read
+   cannot adopt another request's lease. This coordinates normal concurrent
+   requests but is not a distributed transaction with Slack.
 4. Identical retries and out-of-order updates return 200 without touching
    Slack. Transient Slack or Storage errors return 503, so the Action Group
    [retries](https://learn.microsoft.com/azure/azure-monitor/alerts/action-groups#webhook).
@@ -678,6 +767,12 @@ source .venv/bin/activate          # PowerShell: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt -r requirements-test.txt
 pytest -q
 flake8 .
+```
+
+Hook regressions use mocked Azure CLI/azd commands and never access Azure:
+
+```sh
+pwsh -NoProfile -File test/test-hooks.ps1
 ```
 
 Give yourself access to the incident table:

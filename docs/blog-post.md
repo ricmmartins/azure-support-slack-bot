@@ -3,7 +3,7 @@
 *Audience: platform, SRE and on-call teams at growth- and late-stage startups
 running production on Azure across several subscriptions.*
 
-At 2:14 a.m. your p99 latency doubles. The on-call engineer opens the
+Consider an on-call scenario: at 2:14 a.m. your p99 latency doubles. The engineer opens the
 dashboards, sees errors from the database client, and starts the usual
 checklist: recent deploys, feature flags, connection pools. Forty minutes
 later someone opens the Azure portal and finds a Service Health incident for
@@ -42,9 +42,9 @@ At startup scale, three things get in the way:
   us?" The answer should be in the channel where the incident is already being
   discussed, not in someone's inbox.
 
-The goal was simple: when Azure has a problem that affects you, the right
-channel sees one message within seconds, and that message tells the full story
-as it changes.
+The goal is to reduce the time spent checking whether an Azure incident
+explains your symptoms. Service Health is useful context, not a substitute for
+your own telemetry, and this project makes no MTTR or delivery-latency guarantee.
 
 ## Architecture
 
@@ -69,7 +69,7 @@ flowchart LR
 
 Each monitored subscription has an Activity Log Alert on the `ServiceHealth`
 category. It triggers an Action Group that calls the service with a
-[Secure Webhook](https://learn.microsoft.com/azure/azure-monitor/alerts/action-groups#secure-webhook)
+[Secure Webhook](https://learn.microsoft.com/azure/azure-monitor/alerts/action-groups#configure-authentication-for-secure-webhook)
 using the
 [Common Alert Schema](https://learn.microsoft.com/azure/azure-monitor/alerts/alerts-common-schema).
 The service runs on Azure Container Apps, stores a small record per incident in
@@ -119,8 +119,9 @@ than one replica two requests for the same incident can land at the same time.
 Three rules keep that safe:
 
 1. Every write to the incident entity uses an ETag. A short lease (30 seconds)
-   lets exactly one request work on an incident at a time; the other gets a
-   503 and is retried later.
+   coordinates requests; a competing request gets a 503 and is retried later.
+   An owner token is checked after acquisition so a slow read cannot adopt
+   another request's lease.
 2. Identical retries and updates older than the last processed one return 200
    and do nothing.
 3. Status codes match the retry policy. Transient Slack or Storage problems
@@ -130,14 +131,17 @@ Three rules keep that safe:
 
 What we did **not** solve: if the container crashes after Slack accepts the
 first post but before its timestamp is saved, a retry posts a second message.
-Closing that window needs a transactional outbox. For a notification channel,
-an occasional duplicate is acceptable; a missed incident is not.
+An outbox can help recovery but cannot make Slack and Table Storage one atomic
+transaction. Requests that outlive their leases can also overlap. Azure Monitor
+retries only finitely and can suppress a failing endpoint for 15 minutes; this
+sample has no durable queue or replay facility. Keep an independent paging
+path for critical alerts.
 
 ### Routing across subscriptions
 
 Routing is a JSON document with a default channel and rules that filter by
-subscription, service and region. The most specific, highest-priority rule
-wins, and an incident stays in the channel where it was first posted. That
+subscription, service and region. The highest-priority rule wins, then specificity breaks ties.
+An incident stays in the channel where it was first posted. That
 maps to how most platform teams are organized: per-product channels for their
 subscriptions, a data channel for database services, and a catch-all for the
 platform team.
@@ -149,10 +153,11 @@ dozens of subscriptions, the same settings can be applied with
 
 ### Cost versus latency
 
-The Container App runs one always-on replica with 0.5 vCPU and 1 GiB, so Azure
-Monitor never waits on a cold start. With the
+The Container App runs one always-on replica with 0.5 vCPU and 1 GiB to reduce
+cold-start delays. With the
 [Container Apps free grant](https://learn.microsoft.com/azure/container-apps/billing),
-the whole stack costs roughly **US$20–45 per month**. Setting `minReplicas` to
+the whole stack costs roughly **US$20-45 per month** at low volume. This is a
+planning estimate, not a quote. Setting `minReplicas` to
 0 cuts most of the compute cost if you can live with a slower first message.
 
 ### Secrets and identity
@@ -160,22 +165,29 @@ the whole stack costs roughly **US$20–45 per month**. Setting `minReplicas` to
 The Slack token is the only secret. azd writes it to Key Vault during
 provisioning, and the container gets a Key Vault reference resolved through a
 user-assigned managed identity. The same identity reads and writes Table
-Storage and pulls the image from Container Registry. The app has no
-connection strings or storage keys.
+Storage and pulls the image from Container Registry. The app has no Storage connection string or storage keys. Application Insights
+uses its own connection string for telemetry.
+
+For compliance-sensitive teams, decide who can see incident details in Slack,
+how long Slack and Azure retain them, and whether public data-service endpoints
+are allowed. The default infrastructure uses public endpoints and one region
+with locally redundant state. It does not provide cross-region failover.
 
 ## Tutorial
 
-You need about 30 minutes. Commands are for bash; PowerShell 7 versions follow
-where they differ.
+Allow about 30 minutes after approvals and credentials are available.
+Commands are for bash; PowerShell 7 versions follow where they differ.
+Replace every `<...>` placeholder and the sample channel IDs with your values.
 
 ### 1. Prerequisites
 
 Install:
 
+- [Git](https://git-scm.com/downloads)
 - [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli)
 - [Azure Developer CLI (azd)](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd)
 - [PowerShell 7](https://learn.microsoft.com/powershell/scripting/install/installing-powershell),
-  required on every OS because the setup hook is a PowerShell script
+  required on every OS because both hooks are PowerShell scripts
 - [Python 3.11+](https://www.python.org/downloads/), optional, for local runs
   and tests
 - [Docker](https://docs.docker.com/get-docker/), optional; the image is built
@@ -191,10 +203,21 @@ Permissions:
   [Owner](https://learn.microsoft.com/azure/role-based-access-control/built-in-roles),
   or Contributor plus User Access Administrator, because the template creates
   role assignments.
+- **Slack workspace:** permission to install apps, or approval from your
+  workspace admin.
 
 ```bash
-git clone https://github.com/ricmmartins/azure-support-slack-bot.git
+git clone --branch ricmmartins-service-health-mvp https://github.com/ricmmartins/azure-support-slack-bot.git
 cd azure-support-slack-bot
+```
+
+The tutorial targets the Service Health branch until it is merged into `main`.
+Check tools before continuing (these commands work in both shells):
+
+```sh
+az version
+azd version
+pwsh --version
 ```
 
 ### 2. Create the Slack app
@@ -213,6 +236,9 @@ cd azure-support-slack-bot
 
 5. Get each channel ID: click the channel name, open **About**, and copy the
    **Channel ID** at the bottom (it looks like `C0123456789`).
+
+The manifest requests only `chat:write`. Invite the bot even to public channels;
+it has no `chat:write.public` scope. Treat the `xoxb-` token as a password.
 
 ### 3. Write the routing configuration
 
@@ -245,6 +271,9 @@ Create `routes.json`:
 Every filter in a rule must match. Unmatched incidents go to
 `default_channel_id`. Use the service and region names shown in Service
 Health, such as `East US` rather than `eastus`.
+Matching is case-insensitive; service and region filters must match the same
+impacted service. Higher priority wins, then the number of filters, then file
+order. A later routing change does not move an existing incident to a new channel.
 
 ### 4. Deploy
 
@@ -255,7 +284,13 @@ environment:
 az login
 azd auth login
 azd env new shh-prod --subscription "<subscription-id>" --location eastus2
+az account set --subscription "<subscription-id>"
 ```
+
+These single-line commands also work in PowerShell. If needed, use
+`az login --tenant <tenant-id>` and `azd auth login --tenant-id <tenant-id>`.
+Choose a lowercase environment name of at most 20 characters, starting with
+a letter and containing only letters, numbers and hyphens.
 
 Set the Slack token and the routing JSON (as a single line):
 
@@ -271,6 +306,24 @@ azd env set SLACK_BOT_TOKEN "xoxb-your-token"
 $routes = Get-Content routes.json -Raw | ConvertFrom-Json | ConvertTo-Json -Depth 10 -Compress
 azd env set SERVICE_HEALTH_ROUTES_JSON $routes
 ```
+
+| Variable | Meaning |
+|---|---|
+| `AZURE_ENV_NAME` | Environment name, set by `azd env new`; resource names include it |
+| `AZURE_SUBSCRIPTION_ID` | Subscription where the app runs, set by `--subscription` |
+| `AZURE_LOCATION` | Hosting region, set by `--location` |
+| `SLACK_BOT_TOKEN` | Your `xoxb-` token; provisioning stores it in Key Vault |
+| `SERVICE_HEALTH_ROUTES_JSON` | Routing document copied from `routes.json` |
+| `AZURE_TENANT_ID` | Set by the preprovision hook from the Azure CLI account |
+| `SERVICE_HEALTH_API_CLIENT_ID` | Client ID of the webhook app registration, set by the hook |
+| `SERVICE_HEALTH_API_OBJECT_ID` | Object ID of that app registration, set by the hook |
+| `SERVICE_HEALTH_API_IDENTIFIER_URI` | `api://<client-id>`, set by the hook |
+| `SERVICE_APP_IMAGE_NAME` | Application image, set by `azd deploy`; preserved during reprovision |
+
+azd keeps the token in the git-ignored `.azure/<env>/.env`. Do not commit that
+folder or publish terminal screenshots containing the token. The example
+command can enter shell history; use a private terminal and your team's
+secret-handling practices.
 
 Provision and deploy (or run `azd up`, which does both):
 
@@ -288,9 +341,21 @@ azd deploy
   exist yet.
 - **`azd deploy`** builds the image in Container Registry and rolls it out.
   `azd deploy` only swaps the image and does not re-apply Bicep, so on the
-  first deploy a post-deploy hook notices the missing probes and runs
+  first deploy a post-deploy hook checks for both application probes and runs
   `azd provision` once more. That puts the real image in the template and
-  turns on the `/healthz` and `/readyz` probes. Later deploys skip it.
+  turns on the `/healthz` and `/readyz` HTTP probes on port 5000. The hook
+  verifies the image and both probes afterward; later deploys skip provision
+  when both probes match.
+
+The nested provision pins the environment and deployed image. It reruns
+preprovision and reapplies the entire infrastructure, not just probes, so Graph
+reads and any required repairs happen again. Deploy to one environment at a
+time. Bicep remains the source of truth instead of having a second probe
+definition in an imperative script. The
+[azd hook lifecycle](https://learn.microsoft.com/azure/developer/azure-developer-cli/azd-extensibility)
+runs `postdeploy` during both `azd deploy` and `azd up`. Local mocked tests
+cover repair and failure paths; they do not replace testing a first deployment
+in your tenant.
 
 After that, use `azd deploy` for code changes and `azd provision` for
 configuration changes.
@@ -298,6 +363,24 @@ configuration changes.
 If you lack the Entra role, an admin can run `azd hooks run preprovision` in
 their own azd environment and send you the four `AZURE_TENANT_ID` /
 `SERVICE_HEALTH_API_*` values to set with `azd env set`.
+
+Admin setup (same commands in both shells):
+
+```sh
+az login
+azd auth login
+azd env new shh-prod --subscription "<subscription-id>" --location eastus2
+azd hooks run preprovision
+azd env get-value AZURE_TENANT_ID
+azd env get-value SERVICE_HEALTH_API_CLIENT_ID
+azd env get-value SERVICE_HEALTH_API_OBJECT_ID
+azd env get-value SERVICE_HEALTH_API_IDENTIFIER_URI
+```
+
+Set those four named values in your environment with `azd env set NAME VALUE`.
+When configuration and assignments exist, subsequent hooks only read Graph;
+repairs still require an admin. An unreadable stored app ID fails rather than
+silently selecting a replacement.
 
 ### 5. Validate
 
@@ -320,9 +403,61 @@ PowerShell:
 
 ```powershell
 $APP_URI = azd env get-value SERVICE_APP_URI
+$RG = azd env get-value AZURE_RESOURCE_GROUP
+$APP_NAME = azd env get-value SERVICE_APP_NAME
+$ENV_NAME = azd env get-value AZURE_ENV_NAME
 Invoke-RestMethod "$APP_URI/healthz"
 Invoke-RestMethod "$APP_URI/readyz"
+try {
+  Invoke-RestMethod -Method Post -Uri "$APP_URI/api/service-health" `
+    -ContentType application/json -InFile docs/sample-service-health-alert.json
+} catch { $_.Exception.Response.StatusCode.value__ }  # Expected: 401
 ```
+
+Confirm both probes in the template (same command in both shells):
+
+```sh
+az containerapp show --name "$APP_NAME" --resource-group "$RG" --query "properties.template.containers[?name=='app'].probes" -o json
+```
+
+Expect `Liveness` at `/healthz` and `Readiness` at `/readyz`, both HTTP on port
+5000. `/readyz` checks runtime initialization, not Slack or Storage connectivity.
+
+The repository includes `docs/sample-service-health-alert.json`. This smaller
+Common Alert Schema example is also accepted; save it as `sample-alert.json`
+if you want to inspect or customize the fields:
+
+```json
+{
+  "schemaId": "azureMonitorCommonAlertSchema",
+  "data": {
+    "essentials": {},
+    "alertContext": {
+      "subscriptionId": "00000000-0000-0000-0000-000000000000",
+      "eventSource": "ServiceHealth",
+      "level": "Warning",
+      "status": "Active",
+      "submissionTimestamp": "2026-10-08T12:00:00Z",
+      "properties": {
+        "trackingId": "SAMPLE-0001",
+        "title": "Example database incident",
+        "impactStartTime": "2026-10-08T11:45:00Z",
+        "communication": "Engineers are investigating.",
+        "stage": "Active",
+        "impactedServices": [{
+          "ServiceName": "Azure Database for PostgreSQL flexible servers",
+          "ImpactedRegions": [{"RegionName": "East US"}]
+        }]
+      }
+    }
+  }
+}
+```
+
+Posting this JSON anonymously to Azure must still return 401. Do not disable
+Easy Auth or add fake identity headers to make it pass. For a local authenticated-
+bypass run, follow the README's development instructions; for deployed delivery,
+use the signed test below.
 
 Now send a signed test from Azure Monitor. In the portal, open **Monitor** →
 **Alerts** → **Action groups** → `ag-<env>-service-health` → **Test**, choose
@@ -340,9 +475,21 @@ az monitor action-group test-notifications create \
     "$(azd env get-value SERVICE_HEALTH_API_IDENTIFIER_URI)" usecommonalertschema
 ```
 
+PowerShell:
+
+```powershell
+az monitor action-group test-notifications create `
+  --resource-group $RG `
+  --action-group "ag-$ENV_NAME-service-health" `
+  --alert-type servicehealth `
+  --add-action webhook slack-service-health (azd env get-value SERVICE_HEALTH_WEBHOOK_URI) `
+    useaadauth (azd env get-value SERVICE_HEALTH_API_OBJECT_ID) `
+    (azd env get-value SERVICE_HEALTH_API_IDENTIFIER_URI) usecommonalertschema
+```
+
 The [test payload](https://learn.microsoft.com/azure/azure-monitor/alerts/alerts-payload-samples#sample-test-action-service-health-alert)
-always uses the same tracking ID, so a second test returns `duplicate` and
-posts nothing. That is deduplication working.
+always uses the same tracking ID. An identical repeat is `duplicate`; a newer
+timestamp can update the same message, and an older one is `stale`.
 
 Logs and telemetry:
 
@@ -350,17 +497,31 @@ Logs and telemetry:
 az containerapp logs show --name "$APP_NAME" --resource-group "$RG" --follow --tail 50
 ```
 
-In the Log Analytics workspace `log-<env>`:
+Open Application Insights `appi-<env>` for requests, failures and dependencies.
+In the linked Log Analytics workspace `log-<env>`, open **Logs**:
 
 ```kusto
 AppRequests
 | where Url has "/api/service-health"
 | summarize count() by ResultCode, bin(TimeGenerated, 1h)
+
+AppTraces
+| where Message has_any ("Service Health", "Rejected")
+| project TimeGenerated, SeverityLevel, Message, Properties
+| order by TimeGenerated desc
+
+AppDependencies
+| where Target has_any ("slack.com", "table.core.windows.net")
+| summarize total=count(), failed=countif(Success == false) by Target, ResultCode
 ```
 
 ### 6. Add more subscriptions
 
-For each additional subscription in the same tenant:
+For each additional subscription in the same tenant,
+you need Contributor on that subscription, or Monitoring Contributor plus
+permission to create its alert resource group. The subscription-scoped wrapper
+below calls `infra/modules/service-health-alert.bicep` and creates
+`rg-<env>-service-health-alerts`.
 
 ```bash
 az deployment sub create \
@@ -375,9 +536,24 @@ az deployment sub create \
     secureWebhookIdentifierUri="$(azd env get-value SERVICE_HEALTH_API_IDENTIFIER_URI)"
 ```
 
-PowerShell uses the same command with backticks for line breaks and
-`(azd env get-value NAME)` in place of `"$(...)"`; the README has the full
-version.
+PowerShell:
+
+```powershell
+az deployment sub create `
+  --subscription "<other-subscription-id>" `
+  --name service-health-slack-alert `
+  --location eastus2 `
+  --template-file infra/alert-subscription.bicep `
+  --parameters `
+    environmentName=(azd env get-value AZURE_ENV_NAME) `
+    webhookUri=(azd env get-value SERVICE_HEALTH_WEBHOOK_URI) `
+    secureWebhookObjectId=(azd env get-value SERVICE_HEALTH_API_OBJECT_ID) `
+    secureWebhookIdentifierUri=(azd env get-value SERVICE_HEALTH_API_IDENTIFIER_URI)
+```
+
+Add the subscription ID to a routing rule if it needs a dedicated channel.
+Reload `SERVICE_HEALTH_ROUTES_JSON` with step 4's command, then run
+`azd provision`.
 
 ### 7. When something fails
 
@@ -391,10 +567,29 @@ version.
 | Hook fails with `Authorization_RequestDenied` | Missing Entra role. Ask an admin to run `azd hooks run preprovision`. |
 | Provision fails because the Key Vault exists in a deleted state | Purge protection keeps deleted vaults for 90 days. Use a new azd environment name. |
 | 503 for a few minutes after the first deploy | Role assignments are still propagating. Azure Monitor retries on its own. |
+| Postdeploy failed after the image rolled out | Fix the reported login, access or provision error. Run `azd hooks run postdeploy`, then check both probes again. The hook can provision infrastructure and run Entra setup; it is not read-only. |
+
+Inspect authentication (same command in either shell):
+
+```sh
+az containerapp auth show --name "$APP_NAME" --resource-group "$RG"
+```
+
+For a recreated app, clear its stale IDs and reprovision only after confirming
+which registration should protect the endpoint:
+
+```sh
+azd env set SERVICE_HEALTH_API_OBJECT_ID ""
+azd env set SERVICE_HEALTH_API_CLIENT_ID ""
+azd provision
+```
+
+Permanent Slack errors return 422 and are not retried by Azure Monitor. Fixing
+the channel alone does not replay that event; a later update can post again.
 
 ### 8. Cost and cleanup
 
-Expect roughly US$20–45 per month (Container Apps is most of it). Check your
+Expect roughly US$20-45 per month (Container Apps is most of it). Check your
 region with the [pricing calculator](https://azure.microsoft.com/pricing/calculator/).
 
 To remove everything:
@@ -405,9 +600,25 @@ azd down --purge
 az ad app delete --id "$CLIENT_ID"
 ```
 
+PowerShell:
+
+```powershell
+$CLIENT_ID = azd env get-value SERVICE_HEALTH_API_CLIENT_ID
+azd down --purge
+az ad app delete --id $CLIENT_ID
+```
+
 Also delete `rg-<env>-service-health-alerts` in any extra subscriptions, and
 remove the app from Slack to revoke the token. The Key Vault stays
-soft-deleted for 90 days because purge protection is on.
+soft-deleted for 90 days because purge protection is on. `--purge` cannot
+override that protection and may report failure after deleting other resources.
+Before deleting an Entra app, make sure no other deployment uses it.
+
+For each extra subscription (same command in either shell):
+
+```sh
+az group delete --subscription "<other-subscription-id>" --name "rg-<env>-service-health-alerts"
+```
 
 ## Known limitations
 
@@ -416,7 +627,14 @@ soft-deleted for 90 days because purge protection is on.
   Container Registry allow public network access with RBAC-only data access.
   Add private endpoints if your compliance baseline requires them.
 - A crash at the wrong moment can cause a duplicate Slack message.
+- Prolonged failures can lose notifications after Azure Monitor exhausts its
+  retries. There is no queue, dead-letter store or automatic replay.
+- One hosting region and LRS state are not a disaster-recovery architecture.
+  Use an independent fallback notification channel.
 - Rotating the Slack token needs `azd env set` and `azd provision`.
+- The deployment needs a tenant-specific acceptance test of Easy Auth, probes,
+  role propagation and a signed Action Group call. Passing CI alone is not
+  production sign-off.
 
 ## Where to take it next
 
@@ -432,6 +650,6 @@ Ideas that fit a late-stage platform team:
   service returns 503s for more than a few minutes.
 
 If you are building on Azure, the
-[Microsoft for Startups](https://www.microsoft.com/startups) program offers
-Azure credits, technical guidance and access to Microsoft experts as you
-scale. Issues and pull requests on the repository are welcome.
+[Microsoft for Startups](https://www.microsoft.com/startups) site lists current
+eligibility, Azure benefits and technical support options. Check what applies
+to your company before planning credits into your budget.
